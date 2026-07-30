@@ -1,0 +1,9 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+websockets>=14.0
+mlx-audio>=0.2.0
+torch>=2.4.0
+torchaudio>=2.4.0
+numpy>=1.26.0
+soundfile>=0.12.0
+mlx-lm>=0.30.0

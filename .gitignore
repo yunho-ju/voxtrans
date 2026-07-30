@@ -1,0 +1,12 @@
+# client (Tauri/React)
+client/node_modules/
+client/dist/
+client/src-tauri/target/
+
+# server (Python)
+server/.venv/
+server/__pycache__/
+server/*.pyc
+
+.env
+.DS_Store

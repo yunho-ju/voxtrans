@@ -1,0 +1,139 @@
+/* VoxTrans - Glassmorphism */
+
+/* Glass backdrop layer - isolated from content to prevent flicker on DOM changes */
+.glass-backdrop {
+  position: absolute;
+  inset: 0;
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* Custom scrollbar - thin glass style */
+::-webkit-scrollbar {
+  width: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+/* Selection */
+::selection {
+  background: rgba(135, 180, 255, 0.4);
+  color: #fff;
+}
+
+/* Button transitions */
+button {
+  transition: all 0.15s ease;
+}
+
+button:hover {
+  filter: brightness(1.2);
+}
+
+button:active {
+  transform: scale(0.97);
+}
+
+/* Input/select focus glow */
+input:focus,
+select:focus {
+  border-color: rgba(135, 180, 255, 0.5) !important;
+  box-shadow: 0 0 6px rgba(135, 180, 255, 0.15);
+}
+
+/* Transcription entry slide-in (no opacity to avoid backdrop-filter recomposite) */
+@keyframes slideIn {
+  from {
+    transform: translateY(6px);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+.entry-animate {
+  animation: slideIn 0.15s ease-out;
+}
+
+/* Opacity slider */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  outline: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.3);
+  transition: all 0.15s ease;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  background: #fff;
+  transform: scale(1.2);
+}
+
+/* Pulse animation for connecting */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.status-connecting {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* Glass panel shared class */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Settings drawer slide-down animation */
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Mode tab hover */
+.mode-tab:hover {
+  color: rgba(255, 255, 255, 0.65);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* Type input focus */
+input.type-input:focus {
+  border-color: rgba(100, 180, 255, 0.4) !important;
+  box-shadow: 0 0 6px rgba(100, 180, 255, 0.1);
+}

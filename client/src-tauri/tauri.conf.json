@@ -1,0 +1,37 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicehash/tauri/refs/heads/dev/packages/tauri-utils/schema.json",
+  "productName": "VoxTrans",
+  "version": "0.1.0",
+  "identifier": "com.voxtrans.client",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5175",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "title": "VoxTrans",
+        "width": 520,
+        "height": 440,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "resizable": true,
+        "skipTaskbar": true,
+        "shadow": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "icon": []
+  },
+  "plugins": {}
+}
