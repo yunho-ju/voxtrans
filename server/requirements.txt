@@ -7,3 +7,8 @@ torchaudio>=2.4.0
 numpy>=1.26.0
 soundfile>=0.12.0
 mlx-lm>=0.30.0
+# Direct dependency: src/tts.py resamples voice-clone reference audio with
+# scipy.signal.resample. It was previously present only transitively via
+# mlx-audio, so a change there would have surfaced as an ImportError on the
+# first voice-clone request rather than at install time.
+scipy>=1.11.0
