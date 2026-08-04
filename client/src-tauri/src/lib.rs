@@ -1,5 +1,5 @@
-mod audio_capture;
-mod audio_output;
+pub mod audio_capture;
+pub mod audio_output;
 mod commands;
 mod mic_capture;
 mod state;

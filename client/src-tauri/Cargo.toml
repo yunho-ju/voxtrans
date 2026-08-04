@@ -17,9 +17,18 @@ log = "0.4"
 env_logger = "0.11"
 url = "2"
 bytemuck = { version = "1", features = ["derive"] }
+# commands.rs:25 timestamps the meeting notes file. Never declared, so the
+# crate has not compiled from this repository state — chrono was only in
+# Cargo.lock, pulled in transitively by serde_with.
+chrono = "0.4"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+# The client had no tests before feature 002. Integration tests live in
+# tests/ and exercise the library crate, not the Tauri app shell.
+tempfile = "3"
 
 [lib]
 name = "voxtrans_client_lib"
