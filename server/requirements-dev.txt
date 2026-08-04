@@ -1,0 +1,7 @@
+# Development / measurement dependencies for feature 001-realtime-latency.
+# Runtime dependencies live in requirements.txt.
+
+pytest>=8.3.0
+pytest-asyncio>=0.24.0
+huggingface_hub>=0.26.0
+httpx>=0.27.0          # FastAPI TestClient transport
