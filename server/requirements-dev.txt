@@ -1,7 +1,13 @@
-# Development / measurement dependencies for feature 001-realtime-latency.
+# Development / measurement dependencies.
 # Runtime dependencies live in requirements.txt.
 
 pytest>=8.3.0
 pytest-asyncio>=0.24.0
 huggingface_hub>=0.26.0
 httpx>=0.27.0          # FastAPI TestClient transport
+
+# Feature 002: the audio-capture fixture plays a reference tone into the
+# loopback device through PortAudio, because ffmpeg's avfoundation has no
+# output muxer. Present only transitively via mlx-audio until now, which is
+# the same undeclared-dependency class as scipy (001 T007a).
+sounddevice>=0.5.0
