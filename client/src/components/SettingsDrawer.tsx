@@ -5,6 +5,11 @@ interface OutputDevice {
   uid: string;
 }
 
+interface InputDevice {
+  name: string;
+  uid: string;
+}
+
 interface Props {
   onClose: () => void;
   serverUrl: string;
@@ -20,6 +25,9 @@ interface Props {
   outputDevice: string;
   onOutputDeviceChange: (uid: string) => void;
   outputDevices: OutputDevice[];
+  inputDevice: string;
+  onInputDeviceChange: (uid: string) => void;
+  inputDevices: InputDevice[];
   speakTargetLanguage: string;
   onSpeakTargetLanguageChange: (lang: string) => void;
   voiceClone: boolean;
@@ -81,6 +89,9 @@ const SettingsDrawer: React.FC<Props> = ({
   outputDevice,
   onOutputDeviceChange,
   outputDevices,
+  inputDevice,
+  onInputDeviceChange,
+  inputDevices,
   speakTargetLanguage,
   onSpeakTargetLanguageChange,
   voiceClone,
@@ -170,6 +181,22 @@ const SettingsDrawer: React.FC<Props> = ({
           >
             <option value="">Default (Speakers)</option>
             {outputDevices.map((dev) => (
+              <option key={dev.uid} value={dev.uid}>
+                {dev.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div style={styles.settingRow}>
+          <label style={styles.label}>Microphone</label>
+          <select
+            aria-label="Microphone"
+            value={inputDevice}
+            onChange={(e) => onInputDeviceChange(e.target.value)}
+            style={styles.select}
+          >
+            <option value="">Default (System)</option>
+            {inputDevices.map((dev) => (
               <option key={dev.uid} value={dev.uid}>
                 {dev.name}
               </option>

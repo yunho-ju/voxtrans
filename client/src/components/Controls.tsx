@@ -6,6 +6,7 @@ interface Props {
   onClear: () => void;
   serverUrl: string;
   outputDevice: string;
+  inputDevice: string;
   mode: string;
   onModeChange: (mode: string) => void;
   micMode: string;
@@ -23,6 +24,7 @@ const Controls: React.FC<Props> = ({
   onClear,
   serverUrl,
   outputDevice,
+  inputDevice,
   mode,
   onModeChange,
   micMode,
@@ -47,8 +49,16 @@ const Controls: React.FC<Props> = ({
         await invoke("stop_capture");
       } else {
         await invoke("set_server_url", { url: serverUrl });
+        // An empty UID is the explicit "use the system default" choice,
+        // not an accidental fallback (contracts/audio-devices.md "Device
+        // selection"; research.md D0 -- the old behaviour was silently
+        // defaulting with no way to choose otherwise, which is exactly
+        // the bug this makes impossible: the default is now one option
+        // among the picker's choices, reached deliberately, same as
+        // outputDeviceUid already does for the output side).
         await invoke("start_capture", {
           outputDeviceUid: outputDevice || null,
+          inputDeviceUid: inputDevice || null,
         });
       }
     } catch (e) {

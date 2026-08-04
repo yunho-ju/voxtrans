@@ -15,7 +15,7 @@ extern "C" {
         callback: extern "C" fn(*const f32, usize, usize, usize) -> (),
     ) -> bool;
     fn sck_stop_capture();
-    fn sck_list_audio_devices() -> *mut c_char;
+    fn audio_list_input_devices() -> *mut c_char;
 }
 
 /// Called from Swift with PCM float32 mono 16kHz audio data
@@ -57,17 +57,34 @@ extern "C" fn audio_data_callback(
     }
 }
 
-/// List available audio capture methods
-pub fn list_input_devices() -> Vec<String> {
-    let ptr = unsafe { sck_list_audio_devices() };
+/// List available microphone input devices as (name, uid) pairs.
+///
+/// FR-001/FR-009/FR-010/FR-011 (research.md D1): the app must let a user
+/// pick a capture device by stable UID rather than depend on the system
+/// default input, which is what let a loopback device silently swallow the
+/// user's real microphone in the reported bug. Parsed exactly like
+/// `audio_output::list_output_devices` (`audio_output.rs:26-35`) -- same
+/// `name|uid` line format, produced by Swift's `audio_list_input_devices`.
+pub fn list_input_devices() -> Vec<(String, String)> {
+    let ptr = unsafe { audio_list_input_devices() };
     if ptr.is_null() {
-        return vec!["ScreenCaptureKit (System Audio)".to_string()];
+        return vec![];
     }
-    let name = unsafe { CStr::from_ptr(ptr) }
+    let raw = unsafe { CStr::from_ptr(ptr) }
         .to_string_lossy()
         .to_string();
     unsafe { libc::free(ptr as *mut _) };
-    vec![name]
+
+    raw.lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(2, '|').collect();
+            if parts.len() == 2 {
+                Some((parts[0].to_string(), parts[1].to_string()))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Start capturing system audio via ScreenCaptureKit.

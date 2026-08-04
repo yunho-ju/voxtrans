@@ -138,11 +138,6 @@ func sckStopCapture() {
     NSLog("VoxTrans: Audio capture stopped")
 }
 
-@_cdecl("sck_list_audio_devices")
-func sckListAudioDevices() -> UnsafeMutablePointer<CChar>? {
-    return strdup("Core Audio Tap (System Audio)")
-}
-
 private func cleanup() {
     if let engine = audioEngine {
         engine.inputNode.removeTap(onBus: 0)
@@ -169,14 +164,46 @@ private var micEngine: AVAudioEngine?
 private var micCallback: AudioCallback?
 
 @_cdecl("mic_start_capture")
-func micStartCapture(callback: @escaping AudioCallback) -> Bool {
+func micStartCapture(callback: @escaping AudioCallback, deviceUID: UnsafePointer<CChar>) -> Bool {
+    let uid = String(cString: deviceUID)
     micCallback = callback
 
     let engine = AVAudioEngine()
 
     do {
-        // Use default input device (microphone)
         let inputNode = engine.inputNode
+
+        // An empty UID means "system default" (current behaviour, now an
+        // explicit choice). A non-empty UID that cannot be resolved MUST
+        // fail the start and MUST NOT fall back to the default -- that
+        // silent fallback is the confirmed root cause this story fixes.
+        // The device must be set on the input unit *before* the format is
+        // read (contracts/audio-devices.md "Selection ordering"), mirroring
+        // sck_start_capture above.
+        if !uid.isEmpty {
+            guard let deviceID = findAudioDeviceByUID(uid: uid) else {
+                NSLog("VoxTrans Mic: Device not found for UID: \(uid)")
+                micCallback = nil
+                return false
+            }
+            let audioUnit = inputNode.audioUnit!
+            var devID = deviceID
+            let setDeviceStatus = AudioUnitSetProperty(
+                audioUnit,
+                kAudioOutputUnitProperty_CurrentDevice,
+                kAudioUnitScope_Global,
+                0,
+                &devID,
+                UInt32(MemoryLayout<AudioObjectID>.size)
+            )
+            guard setDeviceStatus == noErr else {
+                NSLog("VoxTrans Mic: Failed to set input device: \(setDeviceStatus)")
+                micCallback = nil
+                return false
+            }
+            NSLog("VoxTrans Mic: Set input device ID: \(deviceID) for UID: \(uid)")
+        }
+
         let inputFormat = inputNode.outputFormat(forBus: 0)
         NSLog("VoxTrans Mic: Input format: \(inputFormat)")
 
@@ -405,6 +432,91 @@ func audioListOutputDevices() -> UnsafeMutablePointer<CChar>? {
 
         let deviceName = name as String
         let deviceUID = uid as String
+
+        if !deviceName.isEmpty && !deviceUID.isEmpty {
+            results.append("\(deviceName)|\(deviceUID)")
+        }
+    }
+
+    let joined = results.joined(separator: "\n")
+    return strdup(joined)
+}
+
+@_cdecl("audio_list_input_devices")
+func audioListInputDevices() -> UnsafeMutablePointer<CChar>? {
+    var propertyAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDevices,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+
+    var dataSize: UInt32 = 0
+    var status = AudioObjectGetPropertyDataSize(
+        AudioObjectID(kAudioObjectSystemObject),
+        &propertyAddress,
+        0, nil,
+        &dataSize
+    )
+    guard status == noErr else { return nil }
+
+    let deviceCount = Int(dataSize) / MemoryLayout<AudioObjectID>.size
+    var deviceIDs = [AudioObjectID](repeating: 0, count: deviceCount)
+    status = AudioObjectGetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject),
+        &propertyAddress,
+        0, nil,
+        &dataSize,
+        &deviceIDs
+    )
+    guard status == noErr else { return nil }
+
+    var results: [String] = []
+
+    for deviceID in deviceIDs {
+        // Check if device has input streams
+        var streamAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreams,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var streamSize: UInt32 = 0
+        let streamStatus = AudioObjectGetPropertyDataSize(deviceID, &streamAddress, 0, nil, &streamSize)
+        if streamStatus != noErr || streamSize == 0 {
+            continue // Not an input device
+        }
+
+        // Get device name. Unlike audio_list_output_devices above (left
+        // as-is; see evidence/US3.md), this reads into an `Unmanaged<CFString>?`
+        // rather than taking the address of a `CFString` variable directly --
+        // the latter is what the compiler warns about ("forming
+        // 'UnsafeMutableRawPointer' to a variable of type 'CFString'; this is
+        // likely incorrect because 'CFString' may contain an object
+        // reference"), since `&name` there hands Core Audio a raw pointer to
+        // a Swift-managed object reference. `Unmanaged<CFString>?` is a plain
+        // struct wrapping a pointer, so `&name` here is not that -- ownership
+        // is taken explicitly via `takeRetainedValue()` once Core Audio has
+        // written the (already +1) CFStringRef into it.
+        var nameAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioObjectPropertyName,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var name: Unmanaged<CFString>?
+        var nameSize = UInt32(MemoryLayout<CFString?>.size)
+        AudioObjectGetPropertyData(deviceID, &nameAddress, 0, nil, &nameSize, &name)
+
+        // Get device UID (same pattern as the name read above).
+        var uidAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var uid: Unmanaged<CFString>?
+        var uidSize = UInt32(MemoryLayout<CFString?>.size)
+        AudioObjectGetPropertyData(deviceID, &uidAddress, 0, nil, &uidSize, &uid)
+
+        let deviceName = (name?.takeRetainedValue() as String?) ?? ""
+        let deviceUID = (uid?.takeRetainedValue() as String?) ?? ""
 
         if !deviceName.isEmpty && !deviceUID.isEmpty {
             results.append("\(deviceName)|\(deviceUID)")

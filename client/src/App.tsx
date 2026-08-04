@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import TranscriptionOverlay from "./components/TranscriptionOverlay";
 import StatusBar from "./components/StatusBar";
 import Controls from "./components/Controls";
@@ -8,6 +9,11 @@ import SettingsDrawer from "./components/SettingsDrawer";
 import { useTranscription } from "./hooks/useTranscription";
 
 interface OutputDevice {
+  name: string;
+  uid: string;
+}
+
+interface InputDevice {
   name: string;
   uid: string;
 }
@@ -25,6 +31,10 @@ const App: React.FC = () => {
   const [ttsVoice, setTtsVoice] = useState("Ryan");
   const [outputDevice, setOutputDevice] = useState("");
   const [outputDevices, setOutputDevices] = useState<OutputDevice[]>([]);
+  const [inputDevice, setInputDevice] = useState(
+    () => localStorage.getItem("voxtrans_input_device") || ""
+  );
+  const [inputDevices, setInputDevices] = useState<InputDevice[]>([]);
   const [speakTargetLanguage, setSpeakTargetLanguage] = useState("English");
   const [voiceClone, setVoiceClone] = useState(true);
   const [micMode, setMicMode] = useState("auto");
@@ -32,6 +42,7 @@ const App: React.FC = () => {
   const [opacity, setOpacity] = useState(0.4);
   const [showSettings, setShowSettings] = useState(false);
   const [textInput, setTextInput] = useState("");
+  const [lastError, setLastError] = useState<string | null>(null);
 
   const sourceLanguageRef = useRef(sourceLanguage);
   sourceLanguageRef.current = sourceLanguage;
@@ -56,6 +67,32 @@ const App: React.FC = () => {
         setOutputDevices(parsed);
       })
       .catch(() => {});
+  }, []);
+
+  // Load input (microphone) devices on mount (T008/T010: real UID
+  // enumeration, no longer a hardcoded single entry).
+  useEffect(() => {
+    invoke<string[][]>("list_devices")
+      .then((devices) => {
+        const parsed = devices.map(([name, uid]) => ({ name, uid }));
+        setInputDevices(parsed);
+      })
+      .catch(() => {});
+  }, []);
+
+  // FR-009 / spec.md US3 acceptance scenario 2: a selected device that
+  // fails to open (missing, removed, or a fabricated UID) must notify the
+  // user rather than silently doing nothing. `commands.rs` already emits
+  // `server-error` naming the failed UID when `mic_capture::start_mic_capture`
+  // returns `Err` -- this is the first (and, before this, only missing)
+  // listener for that event anywhere in `client/src/`.
+  useEffect(() => {
+    const unlistenServerError = listen<string>("server-error", (event) => {
+      setLastError(event.payload);
+    });
+    return () => {
+      unlistenServerError.then((fn) => fn());
+    };
   }, []);
 
   // Send configure automatically when connected
@@ -125,6 +162,11 @@ const App: React.FC = () => {
   const handleServerUrlChange = useCallback((url: string) => {
     setServerUrl(url);
     localStorage.setItem("voxtrans_server_url", url);
+  }, []);
+
+  const handleInputDeviceChange = useCallback((uid: string) => {
+    setInputDevice(uid);
+    localStorage.setItem("voxtrans_input_device", uid);
   }, []);
 
   const handleSourceLanguageChange = useCallback(
@@ -249,6 +291,18 @@ const App: React.FC = () => {
           </div>
         </div>
       </div>
+      {lastError && (
+        <div style={styles.errorBanner} role="alert">
+          <span style={styles.errorBannerText}>{lastError}</span>
+          <button
+            onClick={() => setLastError(null)}
+            style={styles.errorBannerClose}
+            aria-label="Dismiss error"
+          >
+            ✕
+          </button>
+        </div>
+      )}
       <div style={styles.contentArea}>
         <TranscriptionOverlay entries={entries} />
         {showSettings && (
@@ -267,6 +321,9 @@ const App: React.FC = () => {
             outputDevice={outputDevice}
             onOutputDeviceChange={setOutputDevice}
             outputDevices={outputDevices}
+            inputDevice={inputDevice}
+            onInputDeviceChange={handleInputDeviceChange}
+            inputDevices={inputDevices}
             speakTargetLanguage={speakTargetLanguage}
             onSpeakTargetLanguageChange={handleSpeakTargetLanguageChange}
             voiceClone={voiceClone}
@@ -282,6 +339,7 @@ const App: React.FC = () => {
         onClear={clearEntries}
         serverUrl={serverUrl}
         outputDevice={outputDevice}
+        inputDevice={inputDevice}
         mode={mode}
         onModeChange={handleModeChange}
         micMode={micMode}
@@ -374,6 +432,33 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: "column",
     overflow: "hidden",
     zIndex: 1,
+  },
+  errorBanner: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "8px",
+    padding: "6px 10px",
+    backgroundColor: "rgba(248,113,113,0.18)",
+    borderBottom: "1px solid rgba(248,113,113,0.35)",
+    color: "#fecaca",
+    fontSize: "11px",
+    position: "relative" as const,
+    zIndex: 2,
+  },
+  errorBannerText: {
+    flex: 1,
+    overflowWrap: "break-word" as const,
+  },
+  errorBannerClose: {
+    flexShrink: 0,
+    padding: "1px 5px",
+    border: "none",
+    borderRadius: "3px",
+    backgroundColor: "transparent",
+    color: "#fecaca",
+    fontSize: "11px",
+    cursor: "pointer",
   },
 };
 

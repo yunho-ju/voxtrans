@@ -1,5 +1,7 @@
 use log::info;
 use parking_lot::Mutex;
+use std::ffi::CString;
+use std::os::raw::c_char;
 use tokio::sync::mpsc;
 
 const CHUNK_SAMPLES: usize = 1600; // 100ms @ 16kHz
@@ -11,6 +13,7 @@ static MIC_AUDIO_TX: Mutex<Option<mpsc::Sender<Vec<u8>>>> = Mutex::new(None);
 extern "C" {
     fn mic_start_capture(
         callback: extern "C" fn(*const f32, usize, usize, usize) -> (),
+        device_uid: *const c_char,
     ) -> bool;
     fn mic_stop_capture();
 }
@@ -53,22 +56,43 @@ extern "C" fn mic_data_callback(
     }
 }
 
-/// Start capturing microphone audio.
+/// Start capturing microphone audio from `device_uid` (empty means the
+/// system default input -- an explicit choice now, rather than the only
+/// possibility; see research.md D0/D1). A non-empty UID that cannot be
+/// resolved fails the start and names the UID in the returned error; it
+/// never silently falls back to the default (FR-009).
 /// Sends 100ms chunks of float32 mono 16kHz audio prefixed with 0x02.
 pub fn start_mic_capture(
     mic_tx: mpsc::Sender<Vec<u8>>,
     mut stop_rx: mpsc::Receiver<()>,
+    device_uid: String,
 ) -> Result<(), String> {
     *MIC_AUDIO_TX.lock() = Some(mic_tx);
 
-    info!("Starting microphone capture...");
-    let ok = unsafe { mic_start_capture(mic_data_callback) };
+    let c_uid =
+        CString::new(device_uid.as_str()).map_err(|e| format!("Invalid device UID: {}", e))?;
+
+    info!(
+        "Starting microphone capture on device: {}",
+        if device_uid.is_empty() {
+            "default"
+        } else {
+            device_uid.as_str()
+        }
+    );
+    let ok = unsafe { mic_start_capture(mic_data_callback, c_uid.as_ptr()) };
     if !ok {
         *MIC_AUDIO_TX.lock() = None;
-        return Err(
+        return Err(if device_uid.is_empty() {
             "Failed to start mic capture. Grant Microphone permission in System Settings."
-                .to_string(),
-        );
+                .to_string()
+        } else {
+            format!(
+                "Failed to start mic capture on device '{}'. The device may be missing, \
+                 removed, or microphone permission may not be granted.",
+                device_uid
+            )
+        });
     }
     info!("Microphone capture started");
 

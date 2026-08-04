@@ -312,6 +312,7 @@ _kAudioObjectPropertyScopeGlobal = _fourcc("glob")
 _kAudioObjectPropertyElementMain = 0
 _kAudioObjectPropertyName = _fourcc("lnam")
 _kAudioDevicePropertyVolumeScalar = _fourcc("volm")
+_kAudioDevicePropertyStreams = _fourcc("stm#")
 _SCOPE_FOURCC = {"input": _fourcc("inpt"), "output": _fourcc("outp")}
 _kCFStringEncodingUTF8 = 0x08000100
 
@@ -427,6 +428,110 @@ def read_core_audio_volume_scalar(device_name: str, scope: str) -> float | None:
             return None
         return value.value
     return None
+
+
+# ---------------------------------------------------------------------------
+# Device UID lookup (added for T006, US3 input-device selection)
+#
+# `find_core_audio_device_uid` resolves a device's UID directly via CoreAudio,
+# the same way `read_core_audio_volume_scalar` above resolves a device's
+# volume: independently of whatever UID enumeration the application code
+# under test provides. This matters specifically here (constraint 3 in the
+# US3 task brief -- never gate a test with the mechanism it verifies): T008
+# adds a new `audio_list_input_devices` Swift function, and a test that used
+# that same function to discover which UID to select would not be able to
+# tell "the device selection is broken" apart from "the enumeration is
+# broken". Resolving the UID here, through a separate CoreAudio property
+# read, keeps those two failures distinguishable.
+# ---------------------------------------------------------------------------
+
+_kAudioDevicePropertyDeviceUID = _fourcc("uid ")
+
+
+def _core_audio_device_uid(core_audio, core_foundation, device_id: int) -> str | None:
+    """Read `kAudioDevicePropertyDeviceUID` for `device_id` directly via
+    CoreAudio, mirroring `_core_audio_device_name`'s CFString handling but
+    for the UID property."""
+    cf_string_ref = ctypes.c_void_p()
+    status = _core_audio_get_property(
+        core_audio,
+        device_id,
+        _kAudioDevicePropertyDeviceUID,
+        _kAudioObjectPropertyScopeGlobal,
+        _kAudioObjectPropertyElementMain,
+        cf_string_ref,
+        ctypes.sizeof(cf_string_ref),
+    )
+    if status != 0 or not cf_string_ref.value:
+        return None
+    core_foundation.CFStringGetCStringPtr.restype = ctypes.c_char_p
+    core_foundation.CFStringGetCStringPtr.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    uid_ptr = core_foundation.CFStringGetCStringPtr(cf_string_ref, _kCFStringEncodingUTF8)
+    if uid_ptr:
+        return uid_ptr.decode("utf-8")
+    buf = ctypes.create_string_buffer(256)
+    ok = core_foundation.CFStringGetCString(cf_string_ref, buf, 256, _kCFStringEncodingUTF8)
+    return buf.value.decode("utf-8") if ok else None
+
+
+def find_core_audio_device_uid(device_name: str) -> str | None:
+    """Resolve `device_name`'s CoreAudio device UID directly (`ctypes`, no
+    `pyobjc`), independently of any UID enumeration the application under
+    test provides. Returns `None` if no device with that name is currently
+    visible -- callers should treat that as ambient machine state (ie. skip,
+    never fail), the same rule `record_input_device` already follows.
+    """
+    core_audio = ctypes.CDLL(ctypes.util.find_library("CoreAudio"))
+    core_foundation = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
+    for device_id in _core_audio_device_ids(core_audio):
+        if _core_audio_device_name(core_audio, core_foundation, device_id) != device_name:
+            continue
+        return _core_audio_device_uid(core_audio, core_foundation, device_id)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Independent input-device-set ground truth (Critic round 1 finding 4)
+#
+# `AudioCapture.swift`'s `audio_list_input_devices` filters devices by
+# `kAudioDevicePropertyStreams` scoped to *input*. A test that only checks
+# "the returned list is non-empty and well-formed" is satisfied just as well
+# by a filter bug that enumerates every device (input and output alike) --
+# `contracts/audio-devices.md`'s verification table requires the reported
+# input name set to *match* an independent source, not merely overlap it.
+# `list_core_audio_input_device_names` resolves that independent source: the
+# same underlying CoreAudio property, read directly here rather than through
+# anything `AudioCapture.swift` computes, so a bug in the Swift-side filter
+# cannot also move this side of the comparison.
+# ---------------------------------------------------------------------------
+
+
+def _device_has_input_stream(core_audio, device_id: int) -> bool:
+    address = _AudioObjectPropertyAddress(
+        _kAudioDevicePropertyStreams, _SCOPE_FOURCC["input"], _kAudioObjectPropertyElementMain
+    )
+    size = ctypes.c_uint32(0)
+    status = core_audio.AudioObjectGetPropertyDataSize(
+        ctypes.c_uint32(device_id), ctypes.byref(address), ctypes.c_uint32(0), None, ctypes.byref(size)
+    )
+    return status == 0 and size.value > 0
+
+
+def list_core_audio_input_device_names() -> set[str]:
+    """Every currently-visible device name whose *input* scope has at least
+    one stream, resolved directly via CoreAudio -- independent of
+    `audio_list_input_devices` (the Swift function this is compared
+    against)."""
+    core_audio = ctypes.CDLL(ctypes.util.find_library("CoreAudio"))
+    core_foundation = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
+    names: set[str] = set()
+    for device_id in _core_audio_device_ids(core_audio):
+        if not _device_has_input_stream(core_audio, device_id):
+            continue
+        name = _core_audio_device_name(core_audio, core_foundation, device_id)
+        if name:
+            names.add(name)
+    return names
 
 
 def blackhole_expected_gain(volume_scalar: float) -> float:

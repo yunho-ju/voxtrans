@@ -85,8 +85,11 @@ pub async fn stop_meeting() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn list_devices() -> Vec<String> {
+pub fn list_devices() -> Vec<Vec<String>> {
     audio_capture::list_input_devices()
+        .into_iter()
+        .map(|(name, uid)| vec![name, uid])
+        .collect()
 }
 
 #[tauri::command]
@@ -199,6 +202,7 @@ pub async fn start_capture(
     app: AppHandle,
     state: State<'_, SharedState>,
     output_device_uid: Option<String>,
+    input_device_uid: Option<String>,
 ) -> Result<(), String> {
     // Check if already capturing
     if *state.is_capturing.lock() {
@@ -272,9 +276,10 @@ pub async fn start_capture(
     });
 
     // Spawn mic capture on a blocking thread
+    let mic_device_uid = input_device_uid.unwrap_or_default();
     let app_mic = app.clone();
     std::thread::spawn(move || {
-        if let Err(e) = mic_capture::start_mic_capture(mic_tx, stop_mic_rx) {
+        if let Err(e) = mic_capture::start_mic_capture(mic_tx, stop_mic_rx, mic_device_uid) {
             error!("Mic capture error: {}", e);
             let _ = app_mic.emit("server-error", e);
         }
