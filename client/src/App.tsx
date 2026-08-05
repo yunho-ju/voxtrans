@@ -339,6 +339,9 @@ const App: React.FC = () => {
         onClear={clearEntries}
         serverUrl={serverUrl}
         outputDevice={outputDevice}
+        outputDeviceName={
+          outputDevices.find((d) => d.uid === outputDevice)?.name ?? ""
+        }
         inputDevice={inputDevice}
         mode={mode}
         onModeChange={handleModeChange}

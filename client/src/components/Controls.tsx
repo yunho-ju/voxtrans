@@ -6,6 +6,7 @@ interface Props {
   onClear: () => void;
   serverUrl: string;
   outputDevice: string;
+  outputDeviceName: string;
   inputDevice: string;
   mode: string;
   onModeChange: (mode: string) => void;
@@ -24,6 +25,7 @@ const Controls: React.FC<Props> = ({
   onClear,
   serverUrl,
   outputDevice,
+  outputDeviceName,
   inputDevice,
   mode,
   onModeChange,
@@ -56,8 +58,15 @@ const Controls: React.FC<Props> = ({
         // the bug this makes impossible: the default is now one option
         // among the picker's choices, reached deliberately, same as
         // outputDeviceUid already does for the output side).
+        // The output device's name, captured at selection time from the
+        // picker's device list (App.tsx `outputDevices`) rather than
+        // re-queried later: once the device is actually gone, a fresh
+        // enumeration can no longer find a name for it, so "last known
+        // name" has to be threaded through now (specs/002-audio-routing
+        // briefs/US1-round2-T017-T017b.md).
         await invoke("start_capture", {
           outputDeviceUid: outputDevice || null,
+          outputDeviceName: outputDeviceName || null,
           inputDeviceUid: inputDevice || null,
         });
       }

@@ -175,6 +175,7 @@ const SettingsDrawer: React.FC<Props> = ({
         <div style={styles.settingRow}>
           <label style={styles.label}>Output</label>
           <select
+            aria-label="Output"
             value={outputDevice}
             onChange={(e) => onOutputDeviceChange(e.target.value)}
             style={styles.select}

@@ -197,11 +197,31 @@ pub async fn send_speak_text(
     Ok(())
 }
 
+/// Resolves the `(uid, name)` pair `start_capture` passes on to
+/// `audio_output::start_tts_playback` from the two `Option<String>`
+/// parameters `start_capture` receives over Tauri's IPC boundary. Pulled
+/// out as its own function so this one-line pass-through -- silently
+/// breaking here (e.g. discarding `output_device_name`) is invisible to
+/// every test that calls `audio_output::start_tts_playback` directly,
+/// since `start_capture` itself needs a live `AppHandle`/`State` no test in
+/// this suite constructs -- has something narrow enough to unit test
+/// (Critic round 2, US1 round 2 major finding 1, mutation (b)).
+fn resolve_output_device_selection(
+    output_device_uid: Option<String>,
+    output_device_name: Option<String>,
+) -> (String, String) {
+    (
+        output_device_uid.unwrap_or_default(),
+        output_device_name.unwrap_or_default(),
+    )
+}
+
 #[tauri::command]
 pub async fn start_capture(
     app: AppHandle,
     state: State<'_, SharedState>,
     output_device_uid: Option<String>,
+    output_device_name: Option<String>,
     input_device_uid: Option<String>,
 ) -> Result<(), String> {
     // Check if already capturing
@@ -286,10 +306,13 @@ pub async fn start_capture(
     });
 
     // Spawn TTS playback on a blocking thread
-    let device_uid = output_device_uid.unwrap_or_default();
+    let (device_uid, device_name) =
+        resolve_output_device_selection(output_device_uid, output_device_name);
     let app_tts = app.clone();
     std::thread::spawn(move || {
-        if let Err(e) = audio_output::start_tts_playback(device_uid, tts_rx, stop_tts_rx) {
+        if let Err(e) =
+            audio_output::start_tts_playback(device_uid, device_name, tts_rx, stop_tts_rx)
+        {
             error!("TTS playback error: {}", e);
             let _ = app_tts.emit("server-error", e);
         }
@@ -322,4 +345,26 @@ pub async fn stop_capture(state: State<'_, SharedState>) -> Result<(), String> {
     *state.tts_audio_tx.lock() = None;
     info!("Capture stopped");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_output_device_selection_threads_both_uid_and_name() {
+        let (uid, name) = resolve_output_device_selection(
+            Some("uid-123".to_string()),
+            Some("Human Name".to_string()),
+        );
+        assert_eq!(uid, "uid-123");
+        assert_eq!(name, "Human Name");
+    }
+
+    #[test]
+    fn resolve_output_device_selection_defaults_missing_uid_and_name_to_empty() {
+        let (uid, name) = resolve_output_device_selection(None, None);
+        assert_eq!(uid, "");
+        assert_eq!(name, "");
+    }
 }
