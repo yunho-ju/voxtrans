@@ -42,6 +42,16 @@ class _StubSession:
         self.session_id = "stub-session"
         self.mic_active = False
         self.tts_playing = False
+        # `_release_suppression` (ws_handler.py) reads `session.suppression`
+        # directly (Critic T032 minor 1 -- a `getattr(..., None)` fallback
+        # used to stand in for this so this stub didn't need the attribute
+        # at all, which meant a real-session field rename could silently
+        # degrade release into a no-op with nothing here to notice). `None`
+        # is exactly what a real `ClientSession` starts with
+        # (`session.py`), so `test_handle_control_playback_complete_...`
+        # below now exercises the real early-return gate rather than an
+        # attribute-missing shortcut.
+        self.suppression = None
 
 
 async def _run_control(data: str) -> tuple[_FakeWebSocket, _StubSession]:

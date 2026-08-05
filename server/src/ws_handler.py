@@ -89,12 +89,19 @@ def _release_suppression(session: ClientSession, segment_id: int) -> None:
     twice, or releasing a `segment_id` that isn't the session's current
     suppressing segment (stale/unknown), is a no-op -- never an error.
 
-    `getattr(session, "suppression", None)` rather than `session.suppression`
-    tolerates session doubles that don't model suppression at all (e.g.
-    tests/unit/test_protocol_playback_complete.py's minimal stub, which is
-    deliberately scoped to not know about T028's release wiring).
+    Reads `session.suppression` directly -- every real `ClientSession`
+    initializes it to `None` (`session.py`), so there is nothing to
+    tolerate here. A `getattr(session, "suppression", None)` fallback
+    previously stood in this spot to accommodate a test double that didn't
+    model the attribute at all, which made this production code path
+    defensive against a stub rather than the real session (Critic T032
+    minor 1) -- a future rename of `suppression` on the real session would
+    have silently degraded release into a permanent no-op (unbounded
+    suppression) with no test catching it.
+    `tests/unit/test_protocol_playback_complete.py`'s `_StubSession` now
+    sets `self.suppression = None` itself instead.
     """
-    window = getattr(session, "suppression", None)
+    window = session.suppression
     if window is None or window.segment_id != segment_id or window.released:
         return
     window.released = True

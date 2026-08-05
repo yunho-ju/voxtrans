@@ -14,13 +14,55 @@ private var tapID: AudioObjectID = kAudioObjectUnknown
 private var captureCallback: AudioCallback?
 private var aggregateDeviceID: AudioObjectID = kAudioObjectUnknown
 
+/// Translates this process's own PID to a Core Audio process object via
+/// `kAudioHardwarePropertyTranslatePIDToProcessObject` (research.md D5,
+/// FR-006). `CATapDescription`'s `stereoGlobalTapButExcludeProcesses:`
+/// initializer (used below) expects process *object* IDs, not PIDs --
+/// passing `getpid()` directly would silently exclude nothing. Per the
+/// CoreAudio header, a PID that does not
+/// correspond to any process returns `kAudioObjectUnknown` rather than an
+/// error; verified directly on this machine (a standalone probe, not part
+/// of this suite -- see evidence/US2.md) that a genuine PID translates to a
+/// valid, distinct object and a bogus one returns `kAudioObjectUnknown`.
+private func ownProcessObjectID() -> AudioObjectID? {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var pid = getpid()
+    var objectID: AudioObjectID = kAudioObjectUnknown
+    var size = UInt32(MemoryLayout<AudioObjectID>.size)
+    let status = AudioObjectGetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject),
+        &address,
+        UInt32(MemoryLayout<pid_t>.size),
+        &pid,
+        &size,
+        &objectID
+    )
+    guard status == noErr, objectID != kAudioObjectUnknown else { return nil }
+    return objectID
+}
+
 @_cdecl("sck_start_capture")
 func sckStartCapture(callback: @escaping AudioCallback) -> Bool {
     captureCallback = callback
 
-    // 1. Create a CATapDescription for global system audio tap
+    // 1. Create a CATapDescription for global system audio tap, excluding
+    // this app's own process object (FR-006, research.md D5) so the app
+    // never hears its own synthesized TTS output back through the tap. If
+    // translation fails for any reason, fall back to an empty exclude list
+    // rather than failing capture outright -- self-exclusion is a
+    // hardware-level hardening on top of the server-side suppression guard
+    // (T029), not the only defense (research.md D5's "must fall back ...
+    // if it does not [work]").
     // CATapDescription is a class (reference type) — no & needed
-    let tapDesc = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+    let excludeProcesses: [AudioObjectID] = ownProcessObjectID().map { [$0] } ?? []
+    if excludeProcesses.isEmpty {
+        NSLog("VoxTrans: could not resolve own process object -- tap will not self-exclude")
+    }
+    let tapDesc = CATapDescription(stereoGlobalTapButExcludeProcesses: excludeProcesses)
     tapDesc.uuid = UUID()
 
     // 2. Create the process tap via Core Audio

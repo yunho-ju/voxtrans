@@ -138,20 +138,30 @@ pub fn start_tts_playback(
             Err(mpsc::error::TryRecvError::Empty) => {}
         }
 
+        // Read tts_end *before* draining, but hold it rather than applying
+        // it yet (Critic round-3 follow-up: closing the race the first
+        // drain-first fix left open). `tts_end_rx` and `tts_rx` are
+        // different channels fed by the same sequential receive loop
+        // (`ws_client.rs`), in server-send order -- so the instant this
+        // read observes a segment's `tts_end`, that segment's last chunk is
+        // *already* sitting in `tts_rx` (pushed strictly earlier in that
+        // loop's single sequential body) and cannot un-arrive. Draining
+        // `tts_rx` *after* this read (not before it, and not interleaved
+        // with it) therefore always reaches that last chunk before
+        // completion is evaluated below, with no gap for it to land in
+        // between "drain finished" and "tts_end checked" -- the previous
+        // ordering (drain, then check `tts_end_rx`) still had exactly that
+        // gap: a last chunk and its `tts_end` arriving together in the
+        // instant between this tick's drain loop reading `Empty` and its
+        // subsequent `tts_end_rx.try_recv()` would have been missed by the
+        // drain and then immediately judged complete.
+        let pending_segment_end = tts_end_rx.try_recv().ok();
+
         // Drain-first (Critic round-3 blocker fix): every audio chunk
         // already sitting in `tts_rx` this tick must be enqueued into
-        // Swift *before* `tts_end`/completion are evaluated below.
-        // `tts_end_rx` and `tts_rx` are different channels fed by the same
-        // sequential receive loop (`ws_client.rs`), in server-send order --
-        // so if a segment's `tts_end` is already available on
-        // `tts_end_rx`, that segment's last chunk is *already* sitting in
-        // `tts_rx` too (pushed strictly earlier in that loop's single
-        // sequential body). Checking `tts_end_rx`/completion before fully
-        // draining `tts_rx` would let a segment short enough that its last
-        // chunk and its `tts_end` land in the same ~20ms poll tick be
-        // judged complete before that chunk was ever handed to the player
-        // node (`playback_lifecycle.rs`'s `on_chunk_arrived` models exactly
-        // this window).
+        // Swift *before* completion is evaluated below -- see above for why
+        // `pending_segment_end` is read first but applied only after this
+        // drain completes.
         let mut drained_anything = false;
         loop {
             match tts_rx.try_recv() {
@@ -177,10 +187,11 @@ pub fn start_tts_playback(
             }
         }
 
-        // Non-blocking: a segment boundary may or may not have closed since
-        // the last tick. `on_stream_ended` itself no-ops a duplicate
-        // `tts_end` for the segment already being tracked.
-        if let Ok(segment_id) = tts_end_rx.try_recv() {
+        // Now that every chunk that could possibly precede it has been
+        // drained, apply the segment end read above. `on_stream_ended`
+        // itself no-ops a duplicate `tts_end` for the segment already being
+        // tracked.
+        if let Some(segment_id) = pending_segment_end {
             lifecycle.on_stream_ended(segment_id);
         }
 
