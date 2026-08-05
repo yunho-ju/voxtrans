@@ -479,6 +479,14 @@ async def _handle_control(
         )
         background_tasks.add(task)
         task.add_done_callback(background_tasks.discard)
+    elif msg_type == "playback_complete":
+        segment_id = msg.get("segment_id")
+        logger.debug(
+            "Session %s: playback_complete segment_id=%s", session.session_id, segment_id
+        )
+        # Suppression release wiring (SuppressionWindow, deadline race) is a
+        # later round (T028). This round only validates and logs: an
+        # unknown or duplicate segment_id here is not an error (FR-012).
     else:
         async with ws_lock:
             await websocket.send_text(make_error(f"Unknown message type: {msg_type}"))

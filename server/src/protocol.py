@@ -14,6 +14,7 @@ class MessageType(str, Enum):
     SPEAK_TRANSLATION = "speak_translation"
     SPEAK_TEXT = "speak_text"
     TTS_END = "tts_end"
+    PLAYBACK_COMPLETE = "playback_complete"
     ERROR = "error"
     STATUS = "status"
 
