@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -12,6 +13,21 @@ from .config import (
 from .vad import VoiceActivityDetector
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SuppressionWindow:
+    """Tracks one segment's microphone-suppression window
+    (data-model.md §4). Replaces the unconditional `tts_playing = False`
+    release that used to run in `_translate_and_speak`'s `finally` at
+    transmission end: release now happens whichever comes first, of
+    `playback_complete` arriving for `segment_id` or `deadline` passing.
+    """
+
+    segment_id: int
+    synthesized_samples: int
+    deadline: float  # time.monotonic() timestamp
+    released: bool = False
 
 
 class ClientSession:
@@ -35,6 +51,12 @@ class ClientSession:
         self.mic_buffer = AudioBuffer()
         self.mic_vad = VoiceActivityDetector(silence_windows=MIC_VAD_SILENCE_WINDOWS)
         self.tts_playing = False  # suppress mic while TTS is active
+        self.suppression: SuppressionWindow | None = None  # active release window, if any
+        self.transmission_active = False  # True for _translate_and_speak's
+        # whole lifetime, independent of tts_playing/suppression release
+        # timing -- see ws_handler._translate_and_speak (Critic round 3):
+        # the "no concurrent transmissions" gate must hold even if
+        # suppression is ever released early, for any reason.
         self.ref_audio: np.ndarray | None = None  # voice cloning reference
         self.ref_text: str = ""
         self.voice_clone = True  # use voice cloning (ref_audio) or preset voice
