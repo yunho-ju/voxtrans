@@ -25,6 +25,9 @@ class SuppressionWindow:
     """
 
     segment_id: int
+    # Kept for data-model.md §4 schema fidelity; the deadline itself is
+    # computed from the chunk loop's running total in _translate_and_speak,
+    # so nothing reads this field back today.
     synthesized_samples: int
     deadline: float  # time.monotonic() timestamp
     released: bool = False
