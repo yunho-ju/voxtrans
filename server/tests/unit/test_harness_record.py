@@ -14,6 +14,7 @@ import subprocess
 
 import pytest
 
+import bench.budgets as budgets
 import bench.harness as harness
 
 
@@ -36,8 +37,12 @@ def test_stage_timing_within_budget_true_when_no_budget_defined():
 
 
 def test_stage_timing_helper_resolves_budget_from_bench_budgets():
+    # v1.1.0 (T024): translation target is 550 ms. Assert against the single
+    # source of truth rather than a re-hardcoded literal, and pin the claim
+    # this test exists for: the helper resolves whatever budgets.py says.
     stage = harness.stage_timing("translation", 650.0)
-    assert stage.budget_ms == 700.0
+    assert stage.budget_ms == budgets.target_ms("translation")
+    assert stage.budget_ms == 550.0
 
 
 def test_stage_timing_helper_leaves_budget_none_for_unbudgeted_stage():

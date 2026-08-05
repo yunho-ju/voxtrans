@@ -5,17 +5,14 @@ A budget number appearing anywhere else — in a suite, in `harness.py`, in a
 docstring doing its own arithmetic — is a duplicate and a Critic finding;
 everything else must resolve a stage's target through this module.
 
-**PROVISIONAL**: the numbers below are copied verbatim from
-`.specify/memory/constitution.md` § "Performance Standards and Hardware
-Budget" as it stood before the T023-T025 budget reconciliation. They are
-known to be arithmetically inconsistent (analyze finding C1:
-`vad_hold + asr + translation + tts_first_chunk` = 600+400+700+500 = 2200 ms,
-which exceeds `e2e_total`'s 1500 ms) — `test_budget_table_is_self_consistent`
-in `tests/unit/test_budgets.py` asserts the sum stays within `e2e_total` and
-is *expected to fail* against these numbers. That failure is deliberate: it
-is the mechanism that stops the contradiction from being silently encoded as
-passing code. Resolving it is T024's blocking human decision, not this
-module's.
+The numbers below are the T024-approved reconciliation (constitution v1.1.0,
+user decision recorded in
+`specs/001-realtime-latency/evidence/budget-reconciliation.md`, 2026-08-06):
+Option A, stage targets summing exactly to the 2000 ms total, and the
+subtitle budget anchored to speech-end *detection* (physical speech end +
+VAD hold), i.e. `vad_hold + 500 ms` from the bench suite's physical-speech-end
+anchor. `test_budget_table_is_self_consistent` now passes by construction —
+it remains the guard that any future edit keeps the table arithmetic honest.
 """
 
 from __future__ import annotations
@@ -40,12 +37,15 @@ class Budget:
 BUDGETS: dict[str, Budget] = {
     budget.stage: budget
     for budget in (
-        Budget("vad_hold", 600.0, _CONSTITUTION_SOURCE),
-        Budget("asr", 400.0, _CONSTITUTION_SOURCE),
-        Budget("translation", 700.0, _CONSTITUTION_SOURCE),
-        Budget("tts_first_chunk", 500.0, _CONSTITUTION_SOURCE),
-        Budget("e2e_total", 1500.0, _CONSTITUTION_SOURCE),
-        Budget("subtitle_first_token", 500.0, _CONSTITUTION_SOURCE),
+        Budget("vad_hold", 550.0, _CONSTITUTION_SOURCE),
+        Budget("asr", 450.0, _CONSTITUTION_SOURCE),
+        Budget("translation", 550.0, _CONSTITUTION_SOURCE),
+        Budget("tts_first_chunk", 450.0, _CONSTITUTION_SOURCE),
+        Budget("e2e_total", 2000.0, _CONSTITUTION_SOURCE),
+        # Anchored to speech-end *detection*: the bench suite measures from
+        # physical speech end, so its budget is the approved 500 ms plus the
+        # 550 ms vad_hold target (constitution v1.1.0, C3).
+        Budget("subtitle_first_token", 1050.0, _CONSTITUTION_SOURCE),
     )
 }
 

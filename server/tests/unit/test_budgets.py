@@ -4,13 +4,15 @@
 this codebase (data-model.md §4) — a number appearing anywhere else is a
 duplicate and a Critic finding.
 
-`test_budget_table_is_self_consistent` is expected to keep FAILING even
-after T013 lands: the constitution's current per-stage targets sum to more
-than `e2e_total` (analyze finding C1: 600+400+700+500 = 2200 > 1500). That
-arithmetic contradiction is not this task's to resolve — T024 is a blocking
-human decision that reconciles it. This assertion exists specifically so a
-future edit cannot quietly encode the contradiction into passing code; it
-must not be loosened, skipped, or have its numbers "fixed" here.
+History: `test_budget_table_is_self_consistent` deliberately FAILED from
+T013 until T024 — the pre-reconciliation constitution's targets summed to
+2200 ms against a 1500 ms total (analyze C1), and the failing assertion was
+the mechanism that kept that contradiction from being silently encoded. The
+T024 decision (constitution v1.1.0, 2026-08-06, recorded in
+evidence/budget-reconciliation.md) replaced the table with one that sums
+exactly to its 2000 ms total, so the assertion now passes — and remains the
+guard that any future budget edit keeps the arithmetic honest. It must not
+be loosened or skipped.
 """
 
 import pytest
@@ -25,12 +27,15 @@ def test_every_budget_has_a_source_citation():
 
 
 def test_budget_values_match_constitution_performance_standards():
-    assert budgets.target_ms("vad_hold") == 600.0
-    assert budgets.target_ms("asr") == 400.0
-    assert budgets.target_ms("translation") == 700.0
-    assert budgets.target_ms("tts_first_chunk") == 500.0
-    assert budgets.target_ms("e2e_total") == 1500.0
-    assert budgets.target_ms("subtitle_first_token") == 500.0
+    # Constitution v1.1.0 (T024-approved Option A). subtitle_first_token is
+    # detection-anchored: 500 ms after detection = vad_hold target + 500 from
+    # the bench suite's physical-speech-end anchor.
+    assert budgets.target_ms("vad_hold") == 550.0
+    assert budgets.target_ms("asr") == 450.0
+    assert budgets.target_ms("translation") == 550.0
+    assert budgets.target_ms("tts_first_chunk") == 450.0
+    assert budgets.target_ms("e2e_total") == 2000.0
+    assert budgets.target_ms("subtitle_first_token") == 550.0 + 500.0
 
 
 def test_get_unknown_stage_raises_key_error():

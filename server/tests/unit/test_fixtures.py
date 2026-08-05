@@ -75,9 +75,11 @@ SILENCE_FLOOR_DB = -24.0
 
 # Acceptance band for the longest silent *window* run, in windows (not ms):
 # >= 10 windows (320ms) means there is a genuine pause, not an accidentally
-# near-erased one; <= 13 windows (416ms) keeps real margin (>=4 windows /
-# 128ms) below VAD_SILENCE_WINDOWS (17 windows / 550ms, config.py) -- the
-# threshold that actually flushes a segment in vad.py:151. Critic round 1
+# near-erased one; <= 13 windows (416ms) keeps real margin below
+# VAD_SILENCE_WINDOWS -- 31 windows at today's 1000ms hold, 17 at the T055
+# target of 550ms (config.py; corrected at T024, the old comment said 17 was
+# current and made the VAD_SILENCE_WINDOWS assertion below subsumed by this
+# upper bound) -- the threshold that actually flushes a segment in vad.py:151. Critic round 1
 # found the original fixture measured ~16-18 windows here (consuming almost
 # all of the 4.5-window margin research.md D10 assumed), because each half
 # was synthesized as a standalone utterance and carried its own
