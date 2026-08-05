@@ -284,39 +284,53 @@ func audioOutputStart(deviceUID: UnsafePointer<CChar>) -> Bool {
     let player = AVAudioPlayerNode()
     engine.attach(player)
 
-    // TTS output format: 24kHz mono float32
-    let outputFormat = AVAudioFormat(
+    // The output device MUST be resolved and set on the output unit
+    // *before* `engine.mainMixerNode` is ever touched
+    // (contracts/audio-devices.md "Selection ordering", FR-005, research.md
+    // D7): accessing the mixer lazily instantiates it and forms the
+    // mixer->output connection at the then-current device's format, so
+    // setting the device afterwards leaves the graph built for the wrong
+    // device -- the confirmed cause of silent output loss (mirrors
+    // mic_start_capture's ordering at :183-207 and sck_start_capture's at
+    // :63-80). An empty UID means "system default" and is left as-is.
+    if !uid.isEmpty {
+        guard let deviceID = findAudioDeviceByUID(uid: uid) else {
+            NSLog("VoxTrans Output: Device not found for UID: \(uid)")
+            return false
+        }
+        let audioUnit = engine.outputNode.audioUnit!
+        var devID = deviceID
+        let status = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &devID,
+            UInt32(MemoryLayout<AudioObjectID>.size)
+        )
+        guard status == noErr else {
+            NSLog("VoxTrans Output: Failed to set output device: \(status)")
+            return false
+        }
+        NSLog("VoxTrans Output: Set output device ID: \(deviceID)")
+    }
+
+    // TTS output format: 24kHz mono float32 -- what audio_output_enqueue
+    // builds buffers as (:345-368). Player -> mixer stays fixed at this
+    // format regardless of device; the device's real format governs
+    // mixer -> output instead, read only now that the device has already
+    // been set above.
+    let playerFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
         sampleRate: 24000,
         channels: 1,
         interleaved: false
     )!
+    engine.connect(player, to: engine.mainMixerNode, format: playerFormat)
 
-    engine.connect(player, to: engine.mainMixerNode, format: outputFormat)
-
-    // Set output device if UID is not empty
-    if !uid.isEmpty {
-        if let deviceID = findAudioDeviceByUID(uid: uid) {
-            let audioUnit = engine.outputNode.audioUnit!
-            var devID = deviceID
-            let status = AudioUnitSetProperty(
-                audioUnit,
-                kAudioOutputUnitProperty_CurrentDevice,
-                kAudioUnitScope_Global,
-                0,
-                &devID,
-                UInt32(MemoryLayout<AudioObjectID>.size)
-            )
-            if status != noErr {
-                NSLog("VoxTrans Output: Failed to set output device: \(status)")
-                return false
-            }
-            NSLog("VoxTrans Output: Set output device ID: \(deviceID)")
-        } else {
-            NSLog("VoxTrans Output: Device not found for UID: \(uid)")
-            return false
-        }
-    }
+    let deviceFormat = engine.outputNode.outputFormat(forBus: 0)
+    NSLog("VoxTrans Output: Output format: \(deviceFormat)")
+    engine.connect(engine.mainMixerNode, to: engine.outputNode, format: deviceFormat)
 
     do {
         try engine.start()
