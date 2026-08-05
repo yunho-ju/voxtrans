@@ -13,17 +13,25 @@ logic, not any one check's internals (those are exercised live by T019's
 from __future__ import annotations
 
 import argparse
+import os
 
 import pytest
 
+import bench.fetch_models as fetch_models
 import bench.harness as harness
 import bench.run as run
+import src.config as src_config
+
+_ENV_VAR = "VOXTRANS_TRANSLATION_MODEL"
 
 
-def _args(suite: str = "e2e", label: str = "test", iterations: int = 1, force: bool = False) -> argparse.Namespace:
+def _args(
+    suite: str = "e2e", label: str = "test", iterations: int = 1, force: bool = False, model: str | None = None
+) -> argparse.Namespace:
     return run.build_parser().parse_args(
         ["--suite", suite, "--label", label, "--iterations", str(iterations)]
         + (["--force"] if force else [])
+        + (["--model", model] if model else [])
     )
 
 
@@ -44,6 +52,24 @@ class _StubSuite:
 
     def run(self, iterations: int, config: dict):
         self.call_count += 1
+        if self.raises is not None:
+            raise self.raises
+        return [harness.stage_timing("asr", 100.0)], [{"iteration": 0}]
+
+
+class _EnvCapturingStubSuite:
+    """Records the *live* `VOXTRANS_TRANSLATION_MODEL` env value at the
+    moment `run()` is invoked -- standing in for `memory`'s worker
+    subprocess and `subtitle`'s own `src.main` subprocess, both of which
+    inherit whatever this process's environment says at spawn time
+    (Critic round-2 major 3)."""
+
+    def __init__(self, *, raises: Exception | None = None):
+        self.raises = raises
+        self.captured_env: str | None = "not-yet-called"
+
+    def run(self, iterations: int, config: dict):
+        self.captured_env = os.environ.get(_ENV_VAR)
         if self.raises is not None:
             raise self.raises
         return [harness.stage_timing("asr", 100.0)], [{"iteration": 0}]
@@ -201,3 +227,124 @@ def test_main_exit_code_priority_is_2_then_3_then_1(monkeypatch, codes, expected
     exit_code = run.main(["--suite", "all", "--label", "test"])
 
     assert exit_code == expected
+
+
+# --- major 3: `--model` overrides VOXTRANS_TRANSLATION_MODEL for every -----
+# --- model-loading path this run touches, not just the resolved config ----
+# --- dict (contracts/benchmark-cli.md:21) ----------------------------------
+
+
+def _clear_env_var():
+    os.environ.pop(_ENV_VAR, None)
+
+
+def test_run_one_sets_the_env_var_for_the_duration_of_the_suite_run(monkeypatch, tmp_path):
+    """`memory`'s worker and `subtitle`'s own `src.main` subprocess each
+    inherit this process's environment at spawn time -- setting the
+    override here, before the suite even loads, is what a subprocess
+    spawned *inside* `suite_mod.run()` will see."""
+    monkeypatch.setattr(run.harness, "EVIDENCE_DIR", tmp_path)
+    _pass_all_precondition_checks(monkeypatch)
+    monkeypatch.setattr(run.harness, "capture_hardware", lambda: _hardware())
+    _clear_env_var()
+    stub = _EnvCapturingStubSuite()
+    monkeypatch.setattr(run, "_load_suite", lambda suite: stub)
+
+    exit_code = run._run_one("memory", _args(suite="memory", model="acme/candidate-model"))
+
+    assert exit_code == 0
+    assert stub.captured_env == "acme/candidate-model", (
+        "the suite's run() must see the override in the live environment, "
+        "not merely in the resolved config dict"
+    )
+    assert os.environ.get(_ENV_VAR) is None, "the env var must be restored once the run finishes"
+
+
+def test_run_one_restores_a_previously_set_env_var_after_finishing(monkeypatch, tmp_path):
+    monkeypatch.setattr(run.harness, "EVIDENCE_DIR", tmp_path)
+    _pass_all_precondition_checks(monkeypatch)
+    monkeypatch.setattr(run.harness, "capture_hardware", lambda: _hardware())
+    os.environ[_ENV_VAR] = "prior-ambient-value"
+    stub = _EnvCapturingStubSuite()
+    monkeypatch.setattr(run, "_load_suite", lambda suite: stub)
+
+    try:
+        exit_code = run._run_one("memory", _args(suite="memory", model="acme/candidate-model"))
+        assert exit_code == 0
+        assert stub.captured_env == "acme/candidate-model"
+        assert os.environ.get(_ENV_VAR) == "prior-ambient-value"
+    finally:
+        _clear_env_var()
+
+
+def test_run_one_does_not_touch_the_env_var_when_no_model_flag_is_given(monkeypatch, tmp_path):
+    monkeypatch.setattr(run.harness, "EVIDENCE_DIR", tmp_path)
+    _pass_all_precondition_checks(monkeypatch)
+    monkeypatch.setattr(run.harness, "capture_hardware", lambda: _hardware())
+    _clear_env_var()
+    stub = _EnvCapturingStubSuite()
+    monkeypatch.setattr(run, "_load_suite", lambda suite: stub)
+
+    exit_code = run._run_one("e2e", _args(suite="e2e", model=None))
+
+    assert exit_code == 0
+    assert stub.captured_env is None, "no --model given must mean no env mutation at all"
+
+
+def test_run_one_restores_the_env_var_even_when_the_suite_crashes(monkeypatch, tmp_path):
+    monkeypatch.setattr(run.harness, "EVIDENCE_DIR", tmp_path)
+    _pass_all_precondition_checks(monkeypatch)
+    monkeypatch.setattr(run.harness, "capture_hardware", lambda: _hardware())
+    _clear_env_var()
+    crashing = _EnvCapturingStubSuite(raises=RuntimeError("synthetic crash"))
+    monkeypatch.setattr(run, "_load_suite", lambda suite: crashing)
+
+    exit_code = run._run_one("memory", _args(suite="memory", model="acme/candidate-model"))
+
+    assert exit_code == 2
+    assert crashing.captured_env == "acme/candidate-model"
+    assert os.environ.get(_ENV_VAR) is None, "a crash must not leak the override into later runs"
+
+
+# --- minor 1: `_check_models` must validate the *resolved* translation ------
+# --- model (ambient env included), not only an explicit `--model` ----------
+
+
+def test_check_models_validates_the_ambient_resolved_translation_model_without_a_model_flag(monkeypatch):
+    """A `VOXTRANS_TRANSLATION_MODEL` set in the ambient environment (not
+    via `--model`) must be precondition-checked too -- otherwise an invalid
+    ambient override is discovered only mid-run, as a suite crash or worse,
+    a silent download inside a timed region."""
+    monkeypatch.setattr(src_config, "TRANSLATION_MODEL", "ambiently-overridden/fake-model")
+    checked_repo_ids: list[str] = []
+
+    def _fake_verify_model(repo_id):
+        checked_repo_ids.append(repo_id)
+        return fetch_models.VerifyResult(repo_id, repo_id != "ambiently-overridden/fake-model")
+
+    monkeypatch.setattr(run.fetch_models, "verify_model", _fake_verify_model)
+    monkeypatch.setattr(run.fetch_models, "verify_silero_vad", lambda: fetch_models.VerifyResult("silero-vad", True))
+
+    failure = run._check_models(None)
+
+    assert "ambiently-overridden/fake-model" in checked_repo_ids
+    assert failure is not None
+    assert failure.check == "model_snapshot"
+    assert failure.exit_code == 2
+
+
+def test_check_models_prefers_the_explicit_model_flag_over_the_ambient_value(monkeypatch):
+    monkeypatch.setattr(src_config, "TRANSLATION_MODEL", "ambient/should-not-be-used-when-flag-given")
+    checked_repo_ids: list[str] = []
+
+    def _fake_verify_model(repo_id):
+        checked_repo_ids.append(repo_id)
+        return fetch_models.VerifyResult(repo_id, True)
+
+    monkeypatch.setattr(run.fetch_models, "verify_model", _fake_verify_model)
+    monkeypatch.setattr(run.fetch_models, "verify_silero_vad", lambda: fetch_models.VerifyResult("silero-vad", True))
+
+    failure = run._check_models("acme/explicit-flag-model")
+
+    assert failure is None
+    assert "acme/explicit-flag-model" in checked_repo_ids

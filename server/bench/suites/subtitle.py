@@ -10,6 +10,19 @@ partway through, or raised -- never leaving an orphaned server behind
 listening on the port a later run's own precondition check depends on being
 free.
 
+**Warm-up before measurement** (T024 follow-up, budget-reconciliation.md):
+before any timed iteration runs, this suite drives one additional, untimed
+warm-up session through the *same* server process -- same fixture, same
+listen-mode configure -- so ASR and translation are already warm when the
+first measured session starts. That session's latency is discarded
+entirely; it never reaches `latencies_ms` or `samples`. Every measured
+sample instead carries `"warmed_up": True`, using the same
+derive-from-raising pattern `bench/suites/translation.py`'s `_warm_up`
+uses: if the warm-up session raises, `run()` raises before any sample is
+appended, so the field can only be `True` once a real warm-up actually
+completed. See `_run_sessions` for the separation and
+`test_subtitle_warmup.py` for its hermetic (no server) test.
+
 Pre-US5 note: `MessageType.TRANSLATION_PARTIAL` does not exist until Phase 5
 (tasks.md T043-T051) lands. Until then the only message carrying translated
 text is the final `translation` message, so this suite treats whichever of
@@ -87,6 +100,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import soundfile as sf
@@ -196,6 +210,149 @@ def _terminate(process: subprocess.Popen) -> None:
         process.wait(timeout=10)
 
 
+def _run_one_session(
+    ws_client,
+    uri: str,
+    audio_prefix_system: int,
+    audio: np.ndarray,
+    payload: np.ndarray,
+    chunk_samples: int,
+    chunk_duration_s: float,
+    payload_duration_s: float,
+    label: str,
+) -> tuple[float, str]:
+    """Drive exactly one real WebSocket session against the already-running
+    server: connect, configure listen mode, pace-send the fixture (real
+    speech + trailing silence), and return `(latency_ms, message_type)` for
+    the first partial/translation. Used for both the untimed warm-up
+    session and every timed iteration (`_run_sessions`) -- the network
+    behavior is identical either way; only whether the caller keeps the
+    result differs.
+
+    `label` (e.g. `"warmup"` or `"iteration 2"`) identifies *which* session
+    this is, purely so a `SubtitleServerError` raised below says which
+    session failed (Critic round-2 minor 6: that context was lost when this
+    function was extracted out of a single per-iteration `for` loop)."""
+    with ws_client.connect(uri, open_timeout=10) as ws:
+        ws.recv(timeout=5)  # initial "connected" status message -- still on the
+        # main thread here, sequentially before the reader thread exists, so
+        # there is no concurrent-recv hazard with what follows.
+        ws.send(
+            json.dumps(
+                {
+                    "type": "configure",
+                    "mode": "listen",
+                    "language": "korean",
+                    "target_language": "english",
+                }
+            )
+        )
+
+        # From here on, exactly one thread ever calls `ws.recv()` (the
+        # reader thread) while the main thread only sends -- the
+        # supported concurrency pattern for this client (see module
+        # docstring). Bounded by construction: `_PartialReader`'s own
+        # internal deadline covers the full expected duration of this
+        # session (send pacing + how long a real reply may still
+        # take after that), independent of anything below.
+        reader = _PartialReader(
+            ws, deadline=time.monotonic() + payload_duration_s + _FIRST_PARTIAL_TIMEOUT_S
+        )
+        reader.start()
+
+        # Paced to real time (module docstring "Measurement origin",
+        # Critic T020 round-1 major 6): a `next_send` deadline
+        # anchored to the previous target, not a fixed `sleep()` per
+        # chunk, so per-chunk overhead does not accumulate drift
+        # across the ~6.5s payload. Sending concurrently with the
+        # reader thread above -- not after it -- is exactly what
+        # removes the send-then-receive measurement floor (module
+        # docstring, Critic T020 round-2 blocker).
+        speech_end_time: float | None = None
+        offset = 0
+        next_send = time.monotonic()
+        while offset < len(payload):
+            chunk = payload[offset : offset + chunk_samples]
+            offset += chunk_samples
+            ws.send(bytes([audio_prefix_system]) + chunk.tobytes())
+            if offset >= len(audio) and speech_end_time is None:
+                speech_end_time = time.perf_counter()
+            next_send += chunk_duration_s
+            sleep_for = next_send - time.monotonic()
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+
+        # Sending is done; the reader may already have found the
+        # partial concurrently with the pacing loop above (the
+        # common case once the pipeline is fast) or may still be
+        # waiting for it. Either way this wait is bounded by
+        # `_FIRST_PARTIAL_TIMEOUT_S`, and the reader's own deadline
+        # bounds it again independently.
+        found = reader.wait_for_partial(timeout=_FIRST_PARTIAL_TIMEOUT_S)
+        reader.join(timeout=2.0)
+
+        if not found or reader.first_partial_time is None:
+            raise SubtitleServerError(
+                f"no translation_partial/translation arrived within "
+                f"{_FIRST_PARTIAL_TIMEOUT_S}s ({label})"
+            )
+
+        # Not reachable today given real pipeline latency, but the
+        # concurrent-receive design (module docstring) means the
+        # reader thread's timestamp and this thread's
+        # `speech_end_time` are captured independently -- this is
+        # the last line of defense against ever reporting a
+        # negative/zero latency as a real measurement, should that
+        # independence ever break down (T020 round-3 Critic minor).
+        if reader.first_partial_time <= speech_end_time:
+            raise SubtitleServerError(
+                f"first partial arrived at or before speech_end_time ({label}) -- "
+                "not a valid latency measurement"
+            )
+
+        latency_ms = (reader.first_partial_time - speech_end_time) * 1000
+        return latency_ms, reader.message_type
+
+
+def _run_sessions(
+    session_runner: Callable[[str], tuple[float, str]], iterations: int
+) -> tuple[list[float], list[dict]]:
+    """Run one untimed warm-up session via `session_runner`, discarding its
+    result, then `iterations` timed sessions whose latency and message type
+    are recorded (T024 follow-up: the server must have already translated
+    once -- ASR and translation warm -- before any session is measured).
+
+    `session_runner` is the sole injection point, so this warm-up/measured
+    separation is testable without a real server, socket, or `_PartialReader`
+    (see `test_subtitle_warmup.py`). Each call is given a distinct `label`
+    (`"warmup"`, then `"iteration 0"`, `"iteration 1"`, ...) so a
+    `SubtitleServerError` raised inside `_run_one_session` can say which
+    session failed (Critic round-2 minor 6).
+
+    Raises whatever `session_runner` raises for the warm-up call before any
+    timed sample is recorded -- the same derive-from-raising pattern
+    `bench/suites/translation.py`'s `_warm_up` uses: `"warmed_up": True` can
+    then only ever appear on a sample once a real warm-up session actually
+    completed.
+    """
+    session_runner("warmup")  # untimed warm-up; result discarded
+
+    latencies_ms: list[float] = []
+    samples: list[dict] = []
+    for i in range(iterations):
+        latency_ms, message_type = session_runner(f"iteration {i}")
+        latencies_ms.append(latency_ms)
+        samples.append(
+            {
+                "iteration": i,
+                "first_partial_ms": latency_ms,
+                "message_type": message_type,
+                "warmed_up": True,
+            }
+        )
+    return latencies_ms, samples
+
+
 def run(iterations: int, config: dict) -> tuple[list, list[dict]]:
     import websockets.sync.client as ws_client
 
@@ -214,100 +371,23 @@ def run(iterations: int, config: dict) -> tuple[list, list[dict]]:
         payload = np.concatenate([audio, trailing_silence]).astype(np.float32)
         chunk_samples = CHUNK_BYTES // 4
         chunk_duration_s = chunk_samples / SAMPLE_RATE
-
-        latencies_ms: list[float] = []
-        samples: list[dict] = []
+        payload_duration_s = len(payload) / SAMPLE_RATE
         uri = f"ws://127.0.0.1:{PORT}/ws"
 
-        payload_duration_s = len(payload) / SAMPLE_RATE
+        def _session_runner(label: str) -> tuple[float, str]:
+            return _run_one_session(
+                ws_client,
+                uri,
+                AUDIO_PREFIX_SYSTEM,
+                audio,
+                payload,
+                chunk_samples,
+                chunk_duration_s,
+                payload_duration_s,
+                label,
+            )
 
-        for i in range(iterations):
-            with ws_client.connect(uri, open_timeout=10) as ws:
-                ws.recv(timeout=5)  # initial "connected" status message -- still on the
-                # main thread here, sequentially before the reader thread exists, so
-                # there is no concurrent-recv hazard with what follows.
-                ws.send(
-                    json.dumps(
-                        {
-                            "type": "configure",
-                            "mode": "listen",
-                            "language": "korean",
-                            "target_language": "english",
-                        }
-                    )
-                )
-
-                # From here on, exactly one thread ever calls `ws.recv()` (the
-                # reader thread) while the main thread only sends -- the
-                # supported concurrency pattern for this client (see module
-                # docstring). Bounded by construction: `_PartialReader`'s own
-                # internal deadline covers the full expected duration of this
-                # iteration (send pacing + how long a real reply may still
-                # take after that), independent of anything below.
-                reader = _PartialReader(
-                    ws, deadline=time.monotonic() + payload_duration_s + _FIRST_PARTIAL_TIMEOUT_S
-                )
-                reader.start()
-
-                # Paced to real time (module docstring "Measurement origin",
-                # Critic T020 round-1 major 6): a `next_send` deadline
-                # anchored to the previous target, not a fixed `sleep()` per
-                # chunk, so per-chunk overhead does not accumulate drift
-                # across the ~6.5s payload. Sending concurrently with the
-                # reader thread above -- not after it -- is exactly what
-                # removes the send-then-receive measurement floor (module
-                # docstring, Critic T020 round-2 blocker).
-                speech_end_time: float | None = None
-                offset = 0
-                next_send = time.monotonic()
-                while offset < len(payload):
-                    chunk = payload[offset : offset + chunk_samples]
-                    offset += chunk_samples
-                    ws.send(bytes([AUDIO_PREFIX_SYSTEM]) + chunk.tobytes())
-                    if offset >= len(audio) and speech_end_time is None:
-                        speech_end_time = time.perf_counter()
-                    next_send += chunk_duration_s
-                    sleep_for = next_send - time.monotonic()
-                    if sleep_for > 0:
-                        time.sleep(sleep_for)
-
-                # Sending is done; the reader may already have found the
-                # partial concurrently with the pacing loop above (the
-                # common case once the pipeline is fast) or may still be
-                # waiting for it. Either way this wait is bounded by
-                # `_FIRST_PARTIAL_TIMEOUT_S`, and the reader's own deadline
-                # bounds it again independently.
-                found = reader.wait_for_partial(timeout=_FIRST_PARTIAL_TIMEOUT_S)
-                reader.join(timeout=2.0)
-
-                if not found or reader.first_partial_time is None:
-                    raise SubtitleServerError(
-                        f"no translation_partial/translation arrived within "
-                        f"{_FIRST_PARTIAL_TIMEOUT_S}s (iteration {i})"
-                    )
-
-                # Not reachable today given real pipeline latency, but the
-                # concurrent-receive design (module docstring) means the
-                # reader thread's timestamp and this thread's
-                # `speech_end_time` are captured independently -- this is
-                # the last line of defense against ever reporting a
-                # negative/zero latency as a real measurement, should that
-                # independence ever break down (T020 round-3 Critic minor).
-                if reader.first_partial_time <= speech_end_time:
-                    raise SubtitleServerError(
-                        f"first partial arrived at or before speech_end_time "
-                        f"(iteration {i}) -- not a valid latency measurement"
-                    )
-
-                latency_ms = (reader.first_partial_time - speech_end_time) * 1000
-                latencies_ms.append(latency_ms)
-                samples.append(
-                    {
-                        "iteration": i,
-                        "first_partial_ms": latency_ms,
-                        "message_type": reader.message_type,
-                    }
-                )
+        latencies_ms, samples = _run_sessions(_session_runner, iterations)
     finally:
         _terminate(process)
 

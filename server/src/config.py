@@ -1,3 +1,5 @@
+import os
+
 SAMPLE_RATE = 16000
 
 # Network chunk: 100ms (what clients send)
@@ -27,7 +29,17 @@ MAX_SESSIONS = 5
 ASR_MODEL = "mlx-community/Qwen3-ASR-1.7B-8bit"
 
 # Translation
-TRANSLATION_MODEL = "mlx-community/Qwen3-8B-4bit"
+# `VOXTRANS_TRANSLATION_MODEL` overrides the default (research.md D8,
+# FR-003) so the benchmark harness and a future quality decision can select
+# a model without a code change. Both an empty value (e.g. an
+# accidentally-set `VOXTRANS_TRANSLATION_MODEL=` in a shell profile) and a
+# whitespace-only one (Critic round-2 minor 1: non-empty, so a bare `or`
+# check alone would treat it as a real override) are treated as unset --
+# `.strip()` collapses both to `""`, which then falls through to the
+# default via `or`. A real override also has incidental surrounding
+# whitespace stripped.
+_TRANSLATION_MODEL_DEFAULT = "mlx-community/Qwen3-8B-4bit"
+TRANSLATION_MODEL = (os.environ.get("VOXTRANS_TRANSLATION_MODEL") or "").strip() or _TRANSLATION_MODEL_DEFAULT
 
 # TTS
 TTS_MODEL = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit"

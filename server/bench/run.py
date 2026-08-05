@@ -15,9 +15,11 @@ Five preconditions run before any clock starts
 (contracts/benchmark-cli.md "Preconditions checked before any clock starts"):
 
     1. venv imports mlx, mlx_lm, mlx_audio.
-    2. Every model id in the resolved config -- including the Silero VAD
-       cache, contract precondition 3a -- resolves to a complete local
-       snapshot (`bench.fetch_models`, never touching the network here).
+    2. Every model id in the resolved config -- including the *ambient*
+       `VOXTRANS_TRANSLATION_MODEL` override when no `--model` flag is
+       given, and the Silero VAD cache, contract precondition 3a --
+       resolves to a complete local snapshot (`bench.fetch_models`, never
+       touching the network here).
     3. The suite's required fixture WAV exists at 16 kHz with the expected
        duration (only for suites that actually touch a fixture WAV).
     4. `sysctl` reports the reference CPU.
@@ -51,6 +53,8 @@ several in sequence (Critic finding, T020 round 1, major 3).
 from __future__ import annotations
 
 import argparse
+import contextlib
+import os
 import socket
 import sys
 from dataclasses import dataclass
@@ -110,9 +114,17 @@ def _check_imports() -> PreconditionFailure | None:
 
 
 def _check_models(model_override: str | None) -> PreconditionFailure | None:
+    # Validate the *resolved* translation model, not only an explicit
+    # `--model` (Critic round-2 minor 1): `VOXTRANS_TRANSLATION_MODEL` can
+    # also be set ambiently (no `--model` flag at all), and an invalid
+    # ambient override must fail this precondition -- exit 2, before any
+    # clock starts -- rather than surface only mid-run as a suite crash or,
+    # worse, a silent download inside a timed region.
+    from src import config as src_config
+
+    resolved_translation_model = model_override or src_config.TRANSLATION_MODEL
     repo_ids = set(fetch_models.MODEL_REPOS)
-    if model_override:
-        repo_ids.add(model_override)
+    repo_ids.add(resolved_translation_model)
     for repo_id in sorted(repo_ids):
         result = fetch_models.verify_model(repo_id)
         if not result.ok:
@@ -208,6 +220,44 @@ def run_preconditions(
 
 # --- suite dispatch -----------------------------------------------------------
 
+_TRANSLATION_MODEL_ENV_VAR = "VOXTRANS_TRANSLATION_MODEL"
+
+
+@contextlib.contextmanager
+def _translation_model_env_override(model: str | None):
+    """Temporarily set `VOXTRANS_TRANSLATION_MODEL` to `model` for the
+    duration of the `with` block, restoring the previous value (or its
+    absence) on every exit path -- success, suite crash, or precondition
+    short-circuit alike. A no-op when `model` is falsy.
+
+    `--model` "overrides VOXTRANS_TRANSLATION_MODEL for this run only"
+    (contracts/benchmark-cli.md:21) -- Critic round-2 major 3: that promise
+    is broken by only ever changing the resolved `config` dict, because
+    that dict is not the only place a model id gets resolved from. Every
+    subprocess this run spawns (`memory`'s worker via
+    `bench.suites._memory_worker`, `subtitle`'s own `src.main` server)
+    inherits this process's environment at spawn time by default
+    (`subprocess.run`/`Popen` with no `env=` kwarg), and any in-process
+    module that reads `src.config.TRANSLATION_MODEL` at its own first
+    import (e.g. `e2e`'s `TranslationEngine()`) resolves it from whatever
+    this process's environment says at that moment. Setting the override
+    here -- wrapping everything from `run_preconditions` onward, in
+    `_run_one` -- is what makes every one of those sites see it, since any
+    of them may be the first thing to import `src.config` in this process.
+    """
+    if not model:
+        yield
+        return
+    previous = os.environ.get(_TRANSLATION_MODEL_ENV_VAR)
+    os.environ[_TRANSLATION_MODEL_ENV_VAR] = model
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(_TRANSLATION_MODEL_ENV_VAR, None)
+        else:
+            os.environ[_TRANSLATION_MODEL_ENV_VAR] = previous
+
 
 def _resolve_config(model_override: str | None) -> dict:
     from src import config as src_config
@@ -294,39 +344,45 @@ def _run_one(suite: str, args: argparse.Namespace) -> int:
         )
         return 2
 
-    failure, hw = run_preconditions(suite, args.model)
-    if failure is not None:
-        print(f"precondition failed [{failure.check}]: {failure.reason}", file=sys.stderr)
-        return failure.exit_code
+    # Everything below runs inside the env-override window (Critic round-2
+    # major 3): `--model` must reach every model-loading path this run
+    # touches -- preconditions' own snapshot checks, the resolved `config`
+    # dict, and any subprocess a suite spawns -- not just the `config` dict
+    # alone. See `_translation_model_env_override`'s docstring.
+    with _translation_model_env_override(args.model):
+        failure, hw = run_preconditions(suite, args.model)
+        if failure is not None:
+            print(f"precondition failed [{failure.check}]: {failure.reason}", file=sys.stderr)
+            return failure.exit_code
 
-    config = _resolve_config(args.model)
-    iterations = args.iterations or DEFAULT_ITERATIONS[suite]
-    suite_mod = _load_suite(suite)
+        config = _resolve_config(args.model)
+        iterations = args.iterations or DEFAULT_ITERATIONS[suite]
+        suite_mod = _load_suite(suite)
 
-    # A suite that raises after its preconditions passed is a harness
-    # failure (a crash), not a budget miss -- it must exit 2, never the
-    # generic exit 1 an uncaught exception would otherwise produce, and it
-    # must not stop the remaining suites when `--suite all` is running
-    # several in sequence (Critic finding, T020 round 1, major 3).
-    try:
-        stages, samples = suite_mod.run(iterations=iterations, config=config)
-    except Exception as exc:
-        print(f"suite {suite!r} crashed: {exc!r}", file=sys.stderr)
-        return 2
+        # A suite that raises after its preconditions passed is a harness
+        # failure (a crash), not a budget miss -- it must exit 2, never the
+        # generic exit 1 an uncaught exception would otherwise produce, and it
+        # must not stop the remaining suites when `--suite all` is running
+        # several in sequence (Critic finding, T020 round 1, major 3).
+        try:
+            stages, samples = suite_mod.run(iterations=iterations, config=config)
+        except Exception as exc:
+            print(f"suite {suite!r} crashed: {exc!r}", file=sys.stderr)
+            return 2
 
-    record = harness.BenchmarkRecord(
-        suite=suite,
-        label=args.label,
-        command=_format_command(suite, args, iterations),
-        timestamp=datetime.now().isoformat(),
-        hardware=hw,
-        config=config,
-        stages=stages,
-        samples=samples,
-    )
-    harness.write_record(record, force=args.force)
-    print(_format_table(record))
-    return 0 if record.passed else 1
+        record = harness.BenchmarkRecord(
+            suite=suite,
+            label=args.label,
+            command=_format_command(suite, args, iterations),
+            timestamp=datetime.now().isoformat(),
+            hardware=hw,
+            config=config,
+            stages=stages,
+            samples=samples,
+        )
+        harness.write_record(record, force=args.force)
+        print(_format_table(record))
+        return 0 if record.passed else 1
 
 
 def main(argv: list[str] | None = None) -> int:
