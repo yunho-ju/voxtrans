@@ -26,7 +26,10 @@ const TranscriptionOverlay: React.FC<Props> = ({ entries }) => {
             style={{
               ...styles.entry,
               ...(entry.source === "speak" ? styles.speakEntry : {}),
-              opacity: entry.isFinal ? 1 : 0.6,
+              // Pending text must stay legible — it is exactly what the
+              // viewer is reading right now. Mark it with italics instead
+              // of dimming (live-usage feedback, 2026-08-05; full pass in 003).
+              ...(entry.isFinal ? {} : styles.pendingEntry),
             }}
           >
             <div style={styles.textRow}>
@@ -70,9 +73,13 @@ const styles: Record<string, React.CSSProperties> = {
     fontStyle: "italic",
     textShadow: "0 1px 2px rgba(0,0,0,0.5)",
   },
+  pendingEntry: {
+    fontStyle: "italic" as const,
+    opacity: 0.92,
+  },
   entry: {
     color: "#fff",
-    fontSize: "15px",
+    fontSize: "16px",
     lineHeight: "1.5",
     marginBottom: "6px",
     padding: "2px 0",
@@ -103,14 +110,14 @@ const styles: Record<string, React.CSSProperties> = {
   },
   translation: {
     color: "#8cb4ff",
-    fontSize: "13px",
+    fontSize: "14px",
     lineHeight: "1.4",
     marginTop: "2px",
     textShadow: "-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 0 4px rgba(0,0,0,0.7)",
   },
   speakTranslation: {
     color: "#6ee7a0",
-    fontSize: "13px",
+    fontSize: "14px",
     lineHeight: "1.4",
     marginTop: "2px",
     textShadow: "-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 0 4px rgba(0,0,0,0.7)",
