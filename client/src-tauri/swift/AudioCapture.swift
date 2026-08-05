@@ -275,6 +275,18 @@ func micStopCapture() {
 private var outputEngine: AVAudioEngine?
 private var playerNode: AVAudioPlayerNode?
 
+// T025 (data-model.md §3 `PlaybackLifecycle.scheduled_buffers`):
+// incremented when a buffer is scheduled, decremented once AVAudioEngine
+// reports it has actually been heard (`.dataPlayedBack`, not the default
+// `.dataConsumed`, which fires when the buffer merely reaches the renderer
+// -- contracts/playback-protocol.md). Written from two different threads:
+// `audioOutputEnqueue` runs on whatever thread Rust's `start_tts_playback`
+// polling loop calls it from; the completion handler runs on
+// AVAudioEngine's own internal completion queue. `outstandingLock`
+// serializes both sides.
+private let outstandingLock = NSLock()
+private var outstandingBuffers: Int = 0
+
 @_cdecl("audio_output_start")
 func audioOutputStart(deviceUID: UnsafePointer<CChar>) -> Bool {
     let uid = String(cString: deviceUID)
@@ -337,6 +349,11 @@ func audioOutputStart(deviceUID: UnsafePointer<CChar>) -> Bool {
         player.play()
         outputEngine = engine
         playerNode = player
+        // Fresh session -- nothing from a previous session should carry
+        // over into this one's completion count.
+        outstandingLock.lock()
+        outstandingBuffers = 0
+        outstandingLock.unlock()
         NSLog("VoxTrans Output: Audio output started")
         return true
     } catch {
@@ -353,7 +370,21 @@ func audioOutputStop() {
     }
     outputEngine = nil
     playerNode = nil
+    outstandingLock.lock()
+    outstandingBuffers = 0
+    outstandingLock.unlock()
     NSLog("VoxTrans Output: Audio output stopped")
+}
+
+// T025: Rust's `start_tts_playback` polls this every tick
+// (`audio_output.rs`) to drive `PlaybackLifecycle` -- see
+// `playback_lifecycle.rs`'s doc comment for why a polled counter was
+// chosen over a Swift->Rust callback registration.
+@_cdecl("audio_output_outstanding_buffers")
+func audioOutputOutstandingBuffers() -> Int {
+    outstandingLock.lock()
+    defer { outstandingLock.unlock() }
+    return outstandingBuffers
 }
 
 @_cdecl("audio_output_enqueue")
@@ -378,7 +409,25 @@ func audioOutputEnqueue(data: UnsafePointer<Float>, numSamples: Int) {
         channelData.update(from: data, count: numSamples)
     }
 
-    player.scheduleBuffer(buffer, completionHandler: nil)
+    outstandingLock.lock()
+    outstandingBuffers += 1
+    outstandingLock.unlock()
+
+    // `.dataPlayedBack`, not the default `.dataConsumed`: the latter fires
+    // when this buffer is handed to the renderer, not when it has actually
+    // finished sounding, which is the exact bug (T014/US1) this feature's
+    // completion tracking must not reproduce in a new place
+    // (contracts/playback-protocol.md).
+    player.scheduleBuffer(
+        buffer,
+        at: nil,
+        options: [],
+        completionCallbackType: .dataPlayedBack
+    ) { _ in
+        outstandingLock.lock()
+        outstandingBuffers -= 1
+        outstandingLock.unlock()
+    }
 }
 
 @_cdecl("audio_list_output_devices")

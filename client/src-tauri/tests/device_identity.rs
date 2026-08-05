@@ -62,12 +62,21 @@ static REAL_DEVICE_ACCESS: Mutex<()> = Mutex::new(());
 fn try_start_and_stop(uid: &str, name: &str) -> Result<(), String> {
     let (_tts_tx, tts_rx) = mpsc::channel::<Vec<u8>>(1);
     let (stop_tx, stop_rx) = mpsc::channel::<()>(1);
+    let (_tts_end_tx, tts_end_rx) = mpsc::channel::<i64>(1);
+    let (playback_complete_tx, _playback_complete_rx) = mpsc::channel::<String>(1);
     let (done_tx, done_rx) = std_mpsc::channel::<Result<(), String>>();
 
     let uid_owned = uid.to_string();
     let name_owned = name.to_string();
     thread::spawn(move || {
-        let result = audio_output::start_tts_playback(uid_owned, name_owned, tts_rx, stop_rx);
+        let result = audio_output::start_tts_playback(
+            uid_owned,
+            name_owned,
+            tts_rx,
+            stop_rx,
+            tts_end_rx,
+            playback_complete_tx,
+        );
         let _ = done_tx.send(result);
     });
 

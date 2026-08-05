@@ -243,10 +243,15 @@ pub async fn start_capture(
     // TTS audio channels
     let (tts_tx, tts_rx) = mpsc::channel::<Vec<u8>>(200);
     let (stop_tts_tx, stop_tts_rx) = mpsc::channel::<()>(1);
+    // T026: tts_end segment_id notifications (ws_client -> TTS playback
+    // thread) and the outbound channel `start_tts_playback` sends
+    // `playback_complete` on -- a clone of the same sender other control
+    // messages already use (`send_configure` etc.), not a second send path.
+    let (tts_end_tx, tts_end_rx) = mpsc::channel::<i64>(8);
 
     // Store senders
     *state.stop_tx.lock() = Some(stop_audio_tx);
-    *state.ws_text_tx.lock() = Some(text_tx);
+    *state.ws_text_tx.lock() = Some(text_tx.clone());
     *state.stop_mic_tx.lock() = Some(stop_mic_tx);
     *state.tts_audio_tx.lock() = Some(tts_tx.clone());
     *state.stop_tts_tx.lock() = Some(stop_tts_tx);
@@ -266,6 +271,7 @@ pub async fn start_capture(
             mic_rx,
             text_rx,
             tts_tx,
+            tts_end_tx,
         )
         .await
         {
@@ -310,9 +316,14 @@ pub async fn start_capture(
         resolve_output_device_selection(output_device_uid, output_device_name);
     let app_tts = app.clone();
     std::thread::spawn(move || {
-        if let Err(e) =
-            audio_output::start_tts_playback(device_uid, device_name, tts_rx, stop_tts_rx)
-        {
+        if let Err(e) = audio_output::start_tts_playback(
+            device_uid,
+            device_name,
+            tts_rx,
+            stop_tts_rx,
+            tts_end_rx,
+            text_tx,
+        ) {
             error!("TTS playback error: {}", e);
             let _ = app_tts.emit("server-error", e);
         }

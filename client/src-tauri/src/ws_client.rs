@@ -11,6 +11,11 @@ const AUDIO_PREFIX_TTS: u8 = 0x03;
 /// - Receives mic chunks from mic_audio_rx (mic audio, 0x02 prefixed) and sends to server
 /// - Receives text messages from text_rx and sends to server
 /// - Receives server messages: JSON → Tauri events, binary TTS → tts_audio_tx
+/// - Forwards `tts_end`'s `segment_id` to `tts_end_tx` (T026): the TTS
+///   playback thread (`audio_output::start_tts_playback`) has no other way
+///   to learn a segment's stream has closed -- Swift never sees a
+///   segment_id, only this receive loop parses one off the wire (see
+///   `playback_lifecycle`'s doc comment).
 pub async fn run_ws_pipeline(
     app: AppHandle,
     url: String,
@@ -18,6 +23,7 @@ pub async fn run_ws_pipeline(
     mut mic_audio_rx: mpsc::Receiver<Vec<u8>>,
     mut text_rx: mpsc::Receiver<String>,
     tts_audio_tx: mpsc::Sender<Vec<u8>>,
+    tts_end_tx: mpsc::Sender<i64>,
 ) -> Result<(), String> {
     info!("Connecting to {}", url);
     let (ws_stream, _) = connect_async(&url)
@@ -50,6 +56,17 @@ pub async fn run_ws_pipeline(
                                 let _ = app_recv.emit("speak-translation", text.to_string());
                             }
                             "tts_end" => {
+                                if let Some(segment_id) =
+                                    json.get("segment_id").and_then(|v| v.as_i64())
+                                {
+                                    if tts_end_tx.try_send(segment_id).is_err() {
+                                        warn!(
+                                            "tts_end channel full or closed, dropping \
+                                             segment_id={}",
+                                            segment_id
+                                        );
+                                    }
+                                }
                                 let _ = app_recv.emit("tts-end", text.to_string());
                             }
                             "status" => {

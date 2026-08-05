@@ -2,6 +2,7 @@ pub mod audio_capture;
 pub mod audio_output;
 mod commands;
 mod mic_capture;
+pub mod playback_lifecycle;
 mod state;
 mod ws_client;
 

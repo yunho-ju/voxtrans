@@ -1,4 +1,5 @@
-use log::info;
+use crate::playback_lifecycle::PlaybackLifecycle;
+use log::{info, warn};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use tokio::sync::mpsc;
@@ -9,6 +10,12 @@ extern "C" {
     fn audio_output_stop();
     fn audio_output_enqueue(data: *const f32, num_samples: usize);
     fn audio_list_output_devices() -> *mut c_char;
+    // T025: outstanding-buffer count (`data-model.md` §3 `scheduled_buffers`)
+    // -- incremented in `audio_output_enqueue`, decremented by the
+    // `.dataPlayedBack` completion callback (`AudioCapture.swift`). Swift's
+    // `Int` is word-sized and matches C `long` on every Apple platform this
+    // app targets.
+    fn audio_output_outstanding_buffers() -> std::os::raw::c_long;
 }
 
 /// List available output devices as (name, uid) pairs.
@@ -69,11 +76,22 @@ fn output_start_error_message(device_uid: &str, device_name: &str) -> String {
 /// `list_output_devices()` lookup can no longer find a name for it, so the
 /// caller must thread the name through at selection time (FR-009; see
 /// `mic_capture::start_mic_capture` for the same pattern on the input side).
+///
+/// `tts_end_rx` (T026) carries `segment_id`s parsed from the server's
+/// `tts_end` messages by `ws_client.rs`'s receive loop -- Swift never sees
+/// a segment_id, only Rust does (`playback_lifecycle`'s doc comment). Once
+/// `PlaybackLifecycle` decides a segment has both closed its stream and
+/// drained its queue, its `playback_complete` is sent on
+/// `playback_complete_tx` (the same outbound text-message channel
+/// `commands.rs`'s other control messages use, so no new send path is
+/// needed on the WebSocket side).
 pub fn start_tts_playback(
     device_uid: String,
     device_name: String,
     mut tts_rx: mpsc::Receiver<Vec<u8>>,
     mut stop_rx: mpsc::Receiver<()>,
+    mut tts_end_rx: mpsc::Receiver<i64>,
+    playback_complete_tx: mpsc::Sender<String>,
 ) -> Result<(), String> {
     let c_uid = CString::new(device_uid.as_str())
         .map_err(|e| format!("Invalid device UID: {}", e))?;
@@ -102,24 +120,86 @@ pub fn start_tts_playback(
     // a stop signal can go unnoticed regardless of whether TTS audio is
     // still arriving.
     const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
-    loop {
+    let mut lifecycle = PlaybackLifecycle::new();
+    'outer: loop {
         match stop_rx.try_recv() {
-            Ok(()) => break,
-            Err(mpsc::error::TryRecvError::Disconnected) => break,
+            Ok(()) => {
+                // T026: a segment cut off by stop before it satisfied both
+                // completion conditions must not be reported complete (see
+                // `PlaybackLifecycle::on_stop`) -- the deadline is its
+                // release path instead.
+                lifecycle.on_stop();
+                break;
+            }
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                lifecycle.on_stop();
+                break;
+            }
             Err(mpsc::error::TryRecvError::Empty) => {}
         }
-        match tts_rx.try_recv() {
-            Ok(audio_bytes) => {
-                let num_samples = audio_bytes.len() / 4;
-                if num_samples > 0 {
-                    let data_ptr = audio_bytes.as_ptr() as *const f32;
-                    unsafe { audio_output_enqueue(data_ptr, num_samples) };
+
+        // Drain-first (Critic round-3 blocker fix): every audio chunk
+        // already sitting in `tts_rx` this tick must be enqueued into
+        // Swift *before* `tts_end`/completion are evaluated below.
+        // `tts_end_rx` and `tts_rx` are different channels fed by the same
+        // sequential receive loop (`ws_client.rs`), in server-send order --
+        // so if a segment's `tts_end` is already available on
+        // `tts_end_rx`, that segment's last chunk is *already* sitting in
+        // `tts_rx` too (pushed strictly earlier in that loop's single
+        // sequential body). Checking `tts_end_rx`/completion before fully
+        // draining `tts_rx` would let a segment short enough that its last
+        // chunk and its `tts_end` land in the same ~20ms poll tick be
+        // judged complete before that chunk was ever handed to the player
+        // node (`playback_lifecycle.rs`'s `on_chunk_arrived` models exactly
+        // this window).
+        let mut drained_anything = false;
+        loop {
+            match tts_rx.try_recv() {
+                Ok(audio_bytes) => {
+                    drained_anything = true;
+                    lifecycle.on_chunk_arrived();
+                    let num_samples = audio_bytes.len() / 4;
+                    if num_samples > 0 {
+                        let data_ptr = audio_bytes.as_ptr() as *const f32;
+                        unsafe { audio_output_enqueue(data_ptr, num_samples) };
+                    }
+                    lifecycle.on_chunk_enqueued();
                 }
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    // Channel closed -- no more TTS audio will ever arrive
+                    // for this session; the same "don't report a segment
+                    // complete that never actually finished" reasoning as
+                    // `on_stop` applies here too.
+                    lifecycle.on_stop();
+                    break 'outer;
+                }
+                Err(mpsc::error::TryRecvError::Empty) => break,
             }
-            Err(mpsc::error::TryRecvError::Disconnected) => break, // channel closed
-            Err(mpsc::error::TryRecvError::Empty) => {
-                std::thread::sleep(POLL_INTERVAL);
+        }
+
+        // Non-blocking: a segment boundary may or may not have closed since
+        // the last tick. `on_stream_ended` itself no-ops a duplicate
+        // `tts_end` for the segment already being tracked.
+        if let Ok(segment_id) = tts_end_rx.try_recv() {
+            lifecycle.on_stream_ended(segment_id);
+        }
+
+        lifecycle.observe_outstanding_buffers(unsafe { audio_output_outstanding_buffers() } as i64);
+        if let Some(segment_id) = lifecycle.take_completed_segment() {
+            let message = format!(
+                r#"{{"type":"playback_complete","segment_id":{}}}"#,
+                segment_id
+            );
+            if playback_complete_tx.try_send(message).is_err() {
+                warn!(
+                    "playback_complete channel full or closed, dropping notification for segment_id={}",
+                    segment_id
+                );
             }
+        }
+
+        if !drained_anything {
+            std::thread::sleep(POLL_INTERVAL);
         }
     }
 

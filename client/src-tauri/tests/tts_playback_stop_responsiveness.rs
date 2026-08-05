@@ -49,6 +49,8 @@ fn stop_signal_is_honored_even_when_no_tts_audio_is_ever_sent() {
 
     let (_tts_tx, tts_rx) = mpsc::channel::<Vec<u8>>(1);
     let (stop_tx, stop_rx) = mpsc::channel::<()>(1);
+    let (_tts_end_tx, tts_end_rx) = mpsc::channel::<i64>(1);
+    let (playback_complete_tx, _playback_complete_rx) = mpsc::channel::<String>(1);
 
     let (done_tx, done_rx) = std_mpsc::channel::<Result<(), String>>();
     thread::spawn(move || {
@@ -57,6 +59,8 @@ fn stop_signal_is_honored_even_when_no_tts_audio_is_ever_sent() {
             String::new(),
             tts_rx,
             stop_rx,
+            tts_end_rx,
+            playback_complete_tx,
         );
         // The receiver may already be gone if the test below timed out and
         // returned -- send() failing here is not this test's concern.
