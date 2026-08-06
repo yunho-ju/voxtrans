@@ -10,3 +10,8 @@ server/*.pyc
 
 .env
 .DS_Store
+
+# impeccable transients (decision sketches, question pages, downloaded craft-bar refs)
+.impeccable/sketches/
+.impeccable/questions/
+.impeccable/specimen-*.webp
