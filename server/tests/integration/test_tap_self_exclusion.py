@@ -133,6 +133,11 @@ _AUDIO_CALLBACK = ctypes.CFUNCTYPE(
     ctypes.c_ssize_t,
     ctypes.c_ssize_t,
 )
+# T035 (US4): `sck_start_capture` gained a second, error-reporting callback
+# (research.md D6, "surfacing a failed rebuild") -- this module doesn't
+# change any default device, so it never fires, but the real production
+# signature now requires it on every call.
+_ERROR_CALLBACK = ctypes.CFUNCTYPE(None, ctypes.c_char_p)
 
 
 @pytest.fixture(autouse=True)
@@ -191,7 +196,7 @@ def audio_capture_dylib(tmp_path_factory) -> Path:
 def audio_lib(audio_capture_dylib: Path):
     lib = ctypes.CDLL(str(audio_capture_dylib))
     lib.sck_start_capture.restype = ctypes.c_bool
-    lib.sck_start_capture.argtypes = [_AUDIO_CALLBACK]
+    lib.sck_start_capture.argtypes = [_AUDIO_CALLBACK, _ERROR_CALLBACK]
     lib.sck_stop_capture.restype = None
     lib.sck_stop_capture.argtypes = []
     lib.audio_output_start.restype = ctypes.c_bool
@@ -225,15 +230,29 @@ def _tone_at_tap_capture_rate(tone: np.ndarray, tone_sample_rate: int) -> np.nda
     return resample(tone.astype(np.float64), new_len)
 
 
-def _run_tap_capture(lib, action) -> np.ndarray:
+def _run_tap_capture(lib, action) -> tuple[np.ndarray, list[str]]:
     """Start the real `sck_start_capture(callback)` FFI entry point, run
     `action()` while it accumulates whatever the Core Audio Tap delivers
     (mono float32 at `TAP_CAPTURE_SAMPLE_RATE`), then stop and return
-    everything captured. Returns an empty array if nothing was ever
-    delivered -- see module docstring for why that is a legitimate outcome,
-    not collapsed into a capture failure here.
+    everything captured, plus any error-callback reports. An empty capture
+    array is a legitimate outcome (see module docstring), not collapsed
+    into a failure here.
+
+    T037 Critic minor 1: `_on_error` used to call `pytest.fail` directly
+    from inside the ctypes callback -- a Python exception raised from a C
+    callback frame is swallowed by the C call stack it is running under
+    (`sck_start_capture`'s own internals), not propagated to the test.
+    Collecting into a plain list and letting each *caller* assert on it
+    from the main thread (mirroring `test_device_change.py`'s `_on_error`
+    pattern) is the fix; it also lets
+    `test_own_tts_output_is_excluded_from_the_system_audio_tap` -- whose
+    entire point is a capture window with *no* audio at all, which the new
+    build-watchdog (T037 major 1) cannot distinguish from a broken capture
+    path -- deliberately not assert error-free, while the sibling test
+    with real audio playing throughout still does.
     """
     chunks: list[np.ndarray] = []
+    errors: list[str] = []
     lock = threading.Lock()
 
     def _on_audio(data_ptr, num_samples, _sample_rate, _channels) -> None:
@@ -245,7 +264,13 @@ def _run_tap_capture(lib, action) -> np.ndarray:
 
     c_callback = _AUDIO_CALLBACK(_on_audio)
 
-    ok = lib.sck_start_capture(c_callback)
+    def _on_error(message: bytes | None) -> None:
+        with lock:
+            errors.append(message.decode("utf-8") if message else "")
+
+    c_error_callback = _ERROR_CALLBACK(_on_error)
+
+    ok = lib.sck_start_capture(c_callback, c_error_callback)
     assert ok, "sck_start_capture returned false"
     time.sleep(TAP_SETTLE_S)
     try:
@@ -254,9 +279,8 @@ def _run_tap_capture(lib, action) -> np.ndarray:
         lib.sck_stop_capture()
 
     with lock:
-        if not chunks:
-            return np.zeros(0, dtype=np.float64)
-        return np.concatenate(chunks).astype(np.float64)
+        captured = np.concatenate(chunks).astype(np.float64) if chunks else np.zeros(0, dtype=np.float64)
+        return captured, list(errors)
 
 
 def test_own_tts_output_is_excluded_from_the_system_audio_tap(audio_lib, blackhole_uid):
@@ -297,12 +321,19 @@ def test_own_tts_output_is_excluded_from_the_system_audio_tap(audio_lib, blackho
         finally:
             audio_lib.audio_output_stop()
 
-    captured = _run_tap_capture(audio_lib, _play_self_tone)
+    captured, errors = _run_tap_capture(audio_lib, _play_self_tone)
 
     if captured.size == 0:
         # Nothing left to mix once self is excluded and nothing else was
         # playing -- see module docstring. Aliveness of the tap mechanism
         # itself is proven by the separate test below, not by this one.
+        # Deliberately does NOT assert `not errors` here (T037 Critic minor
+        # 1): this scenario is exactly what the build-watchdog (T037 major
+        # 1) cannot distinguish from a broken capture path -- a real
+        # rebuild-failure report would look identical to this test's own
+        # designed "nothing to capture" outcome from inside Swift. The
+        # sibling test below, with real audio playing throughout, is where
+        # "no spurious error" is actually checkable.
         return
 
     rms = _rms(captured)
@@ -357,8 +388,9 @@ def test_tap_still_captures_a_different_processes_audio_while_excluding_self(aud
         )
         time.sleep(TAIL_MARGIN_S)
 
-    captured = _run_tap_capture(audio_lib, _play_other_process_tone)
+    captured, errors = _run_tap_capture(audio_lib, _play_other_process_tone)
 
+    assert not errors, f"expected no rebuild-failure reports -- real audio plays throughout this test, got: {errors}"
     assert captured.size > 0, (
         "expected the tap to still capture a different process's audio while "
         "self-excluded -- an empty capture here means the tap is dead, not "

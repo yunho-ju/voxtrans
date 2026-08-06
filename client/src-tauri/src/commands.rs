@@ -290,11 +290,25 @@ pub async fn start_capture(
     *state.status.lock() = ConnectionStatus::Connected;
     let _ = app.emit("connection-status", "connected");
 
-    // Spawn system audio capture on a blocking thread
+    // Spawn system audio capture on a blocking thread. `warning_tx` (T037
+    // Critic round 2) carries non-fatal, `WARN:`-prefixed reports from a
+    // device-change rebuild that has not yet produced audio -- forwarded
+    // to the same `server-error` event the fatal path already uses (the
+    // frontend banner needs no new event type, per the confirmed design),
+    // but on its own async task so it can emit *while* the capture thread
+    // below is still blocked polling, not only after the whole session ends.
+    let (warning_tx, mut warning_rx) = mpsc::channel::<String>(8);
+    let app_warning = app.clone();
+    tokio::spawn(async move {
+        while let Some(message) = warning_rx.recv().await {
+            let _ = app_warning.emit("server-error", message);
+        }
+    });
+
     let state_audio = (*state).clone();
     let app_audio = app.clone();
     std::thread::spawn(move || {
-        if let Err(e) = audio_capture::start_capture(audio_tx, stop_audio_rx) {
+        if let Err(e) = audio_capture::start_capture(audio_tx, stop_audio_rx, warning_tx) {
             error!("Audio capture error: {}", e);
             let _ = app_audio.emit("server-error", e);
         }
