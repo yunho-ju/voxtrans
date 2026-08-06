@@ -60,7 +60,11 @@ const App: React.FC = () => {
   const [showTypeInput, setShowTypeInput] = useState(
     () => localStorage.getItem("voxtrans_show_type_input") !== "false"
   );
-  const [outputDevice, setOutputDevice] = useState("");
+  // Persisted like the input device: the meeting-routing setup (Output →
+  // BlackHole) should survive restarts instead of being re-picked each run.
+  const [outputDevice, setOutputDevice] = useState(
+    () => localStorage.getItem("voxtrans_output_device") || ""
+  );
   const [outputDevices, setOutputDevices] = useState<OutputDevice[]>([]);
   const [inputDevice, setInputDevice] = useState(
     () => localStorage.getItem("voxtrans_input_device") || ""
@@ -243,6 +247,31 @@ const App: React.FC = () => {
     localStorage.setItem("voxtrans_input_device", uid);
   }, []);
 
+  const handleOutputDeviceChange = useCallback((uid: string) => {
+    setOutputDevice(uid);
+    localStorage.setItem("voxtrans_output_device", uid);
+  }, []);
+
+  /** One-click meeting routing (2026-08-06 user request): TTS output →
+   * BlackHole 2ch, capture mic → a real (non-virtual) input. The remaining
+   * leg — the meeting app's own mic picker → BlackHole — lives inside
+   * Zoom/Meet and cannot be set from here. Returns a human-readable result
+   * so Settings can show what happened; never silently half-applies. */
+  const applyMeetingPreset = useCallback((): string => {
+    const blackhole = outputDevices.find((d) => d.name.includes("BlackHole"));
+    if (!blackhole) {
+      return "BlackHole 2ch가 없습니다 — 설치 후 다시 시도하세요 (existential.audio/blackhole)";
+    }
+    const realMic = inputDevices.find((d) => !d.name.includes("BlackHole"));
+    handleOutputDeviceChange(blackhole.uid);
+    if (realMic) {
+      handleInputDeviceChange(realMic.uid);
+    }
+    return realMic
+      ? `Output → ${blackhole.name}, Microphone → ${realMic.name} 설정됨. Zoom/Meet의 마이크는 BlackHole 2ch로 직접 선택하세요.`
+      : `Output → ${blackhole.name} 설정됨. 실제 마이크를 찾지 못해 Microphone은 그대로입니다.`;
+  }, [outputDevices, inputDevices, handleOutputDeviceChange, handleInputDeviceChange]);
+
   const handleServerDirChange = useCallback((dir: string) => {
     setServerDirOverride(dir);
     localStorage.setItem("voxtrans_server_dir", dir);
@@ -412,7 +441,8 @@ const App: React.FC = () => {
             ttsVoice={ttsVoice}
             onTtsVoiceChange={handleTtsVoiceChange}
             outputDevice={outputDevice}
-            onOutputDeviceChange={setOutputDevice}
+            onOutputDeviceChange={handleOutputDeviceChange}
+            onApplyMeetingPreset={applyMeetingPreset}
             outputDevices={outputDevices}
             inputDevice={inputDevice}
             onInputDeviceChange={handleInputDeviceChange}

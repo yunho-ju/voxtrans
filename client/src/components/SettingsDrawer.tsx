@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 
 interface OutputDevice {
   name: string;
@@ -27,6 +27,9 @@ interface Props {
   onTtsVoiceChange: (voice: string) => void;
   outputDevice: string;
   onOutputDeviceChange: (uid: string) => void;
+  /** Applies the one-click meeting routing (Output → BlackHole, Mic → real
+   * input) and returns a message describing what it did or why it couldn't. */
+  onApplyMeetingPreset: () => string;
   outputDevices: OutputDevice[];
   inputDevice: string;
   onInputDeviceChange: (uid: string) => void;
@@ -92,6 +95,7 @@ const SettingsDrawer: React.FC<Props> = ({
   onTtsVoiceChange,
   outputDevice,
   onOutputDeviceChange,
+  onApplyMeetingPreset,
   outputDevices,
   inputDevice,
   onInputDeviceChange,
@@ -107,6 +111,7 @@ const SettingsDrawer: React.FC<Props> = ({
   onMicModeChange,
   micActive,
 }) => {
+  const [presetResult, setPresetResult] = useState<string | null>(null);
   return (
     <div style={styles.overlay}>
       <div style={styles.header}>
@@ -175,6 +180,18 @@ const SettingsDrawer: React.FC<Props> = ({
             ))}
           </select>
         </div>
+        <button
+          onClick={() => setPresetResult(onApplyMeetingPreset())}
+          style={styles.presetBtn}
+          data-testid="meeting-preset-btn"
+        >
+          회의 프리셋 — Output·마이크 자동 설정
+        </button>
+        {presetResult && (
+          <div style={styles.presetResult} data-testid="meeting-preset-result">
+            {presetResult}
+          </div>
+        )}
         <div style={styles.settingRow}>
           <label style={styles.label}>Output</label>
           <select
@@ -397,6 +414,21 @@ const styles: Record<string, React.CSSProperties> = {
     color: "rgba(255,255,255,0.5)",
     fontSize: "11px",
     cursor: "pointer",
+  },
+  presetBtn: {
+    padding: "6px 10px",
+    border: "1px solid rgba(255,255,255,0.15)",
+    borderRadius: "5px",
+    backgroundColor: "rgba(255,255,255,0.08)",
+    color: "rgba(255,255,255,0.85)",
+    fontSize: "12px",
+    cursor: "pointer",
+    fontWeight: 500,
+  },
+  presetResult: {
+    fontSize: "11px",
+    color: "rgba(255,255,255,0.6)",
+    lineHeight: 1.4,
   },
   toggleActive: {
     backgroundColor: "rgba(76, 175, 80, 0.2)",

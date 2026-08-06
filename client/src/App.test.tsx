@@ -380,3 +380,65 @@ describe("sessions always run mode both (no mode tabs)", () => {
     );
   });
 });
+
+describe("the meeting preset routes output to BlackHole and mic to a real input", () => {
+  it("applies both selections, persists them, and start_capture carries them", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_output_devices")
+        return [
+          ["BlackHole 2ch", "BH_OUT_UID"],
+          ["USB Audio Output", "USBAudioOutput_UID"],
+        ];
+      if (cmd === "list_devices") return INPUT_DEVICES;
+      return undefined;
+    });
+
+    render(<App />);
+    fireEvent.click(screen.getByTitle("Settings"));
+    // Wait for the async device lists to populate before clicking.
+    await screen.findByRole("option", { name: "USB Audio Output" });
+
+    fireEvent.click(screen.getByTestId("meeting-preset-btn"));
+
+    expect(screen.getByTestId("meeting-preset-result").textContent).toContain(
+      "BlackHole 2ch"
+    );
+    expect(window.localStorage.getItem("voxtrans_output_device")).toBe("BH_OUT_UID");
+    // The real (non-virtual) mic wins over the BlackHole input entry.
+    expect(window.localStorage.getItem("voxtrans_input_device")).toBe(
+      "BuiltInMicrophoneDevice"
+    );
+
+    fireEvent.click(screen.getByText("▶ Start"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(invokeMock).toHaveBeenCalledWith("start_capture", {
+      outputDeviceUid: "BH_OUT_UID",
+      outputDeviceName: "BlackHole 2ch",
+      inputDeviceUid: "BuiltInMicrophoneDevice",
+    });
+  });
+
+  it("explains what to do when BlackHole is not installed", async () => {
+    // Restore the default device lists (no BlackHole output) — the previous
+    // test's mockImplementation would otherwise leak into this one, since
+    // beforeEach only clears calls, not implementations.
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_output_devices") return OUTPUT_DEVICES;
+      if (cmd === "list_devices") return INPUT_DEVICES;
+      return undefined;
+    });
+
+    render(<App />);
+    fireEvent.click(screen.getByTitle("Settings"));
+    await screen.findByRole("option", { name: "USB Audio Output" });
+
+    fireEvent.click(screen.getByTestId("meeting-preset-btn"));
+
+    expect(screen.getByTestId("meeting-preset-result").textContent).toContain(
+      "설치"
+    );
+    expect(window.localStorage.getItem("voxtrans_output_device")).toBeNull();
+  });
+});
