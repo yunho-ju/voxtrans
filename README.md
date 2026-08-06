@@ -209,6 +209,5 @@ validated in live calls. macOS-only by design (MLX + ScreenCaptureKit).
 
 ## License
 
-Not yet chosen — until a `LICENSE` file lands, all rights reserved. Note that
-the bundled model weights are **not** part of this repository and carry their
-own licenses (see each model's Hugging Face card).
+[MIT](LICENSE). Note that the model weights are **not** part of this
+repository and carry their own licenses (see each model's Hugging Face card).
