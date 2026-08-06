@@ -265,6 +265,7 @@ pub async fn start_capture(
 
     let app_ws = app.clone();
     let state_inner = (*state).clone();
+    let state_on_connect = state_inner.clone();
 
     // Spawn WebSocket task (now with mic_rx and tts_tx)
     tokio::spawn(async move {
@@ -276,6 +277,9 @@ pub async fn start_capture(
             text_rx,
             tts_tx,
             tts_end_tx,
+            move || {
+                *state_on_connect.status.lock() = ConnectionStatus::Connected;
+            },
         )
         .await
         {
@@ -288,11 +292,15 @@ pub async fn start_capture(
         *state_inner.is_capturing.lock() = false;
         *state_inner.status.lock() = ConnectionStatus::Disconnected;
         *state_inner.ws_text_tx.lock() = None;
+        // The pipeline ending for ANY reason (refused connect, server gone,
+        // clean close) means the UI must fall back to disconnected. Without
+        // this emit a refused connect left the frontend stuck in
+        // "connecting" with a Stop button that had nothing to stop.
+        let _ = app_ws.emit("connection-status", "disconnected");
     });
-
-    // Update status
-    *state.status.lock() = ConnectionStatus::Connected;
-    let _ = app.emit("connection-status", "connected");
+    // "connected" is emitted by run_ws_pipeline only after connect_async
+    // succeeds — emitting it here unconditionally was a lie on refused
+    // connects (the frontend showed connected while nothing was).
 
     // Spawn system audio capture on a blocking thread. `warning_tx` (T037
     // Critic round 2) carries non-fatal, `WARN:`-prefixed reports from a
@@ -360,7 +368,7 @@ pub async fn start_capture(
 }
 
 #[tauri::command]
-pub async fn stop_capture(state: State<'_, SharedState>) -> Result<(), String> {
+pub async fn stop_capture(app: AppHandle, state: State<'_, SharedState>) -> Result<(), String> {
     // Stop system audio
     let tx = state.stop_tx.lock().take();
     if let Some(tx) = tx {
@@ -380,6 +388,10 @@ pub async fn stop_capture(state: State<'_, SharedState>) -> Result<(), String> {
     *state.status.lock() = ConnectionStatus::Disconnected;
     *state.ws_text_tx.lock() = None;
     *state.tts_audio_tx.lock() = None;
+    // Idempotent UI reset: even when nothing was running (e.g. Stop pressed
+    // while stuck after a refused connect), the frontend must hear
+    // "disconnected" or its capturing flag never clears.
+    let _ = app.emit("connection-status", "disconnected");
     info!("Capture stopped");
     Ok(())
 }

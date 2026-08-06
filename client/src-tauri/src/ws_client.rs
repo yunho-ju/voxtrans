@@ -24,6 +24,7 @@ pub async fn run_ws_pipeline(
     mut text_rx: mpsc::Receiver<String>,
     tts_audio_tx: mpsc::Sender<Vec<u8>>,
     tts_end_tx: mpsc::Sender<i64>,
+    on_connected: impl FnOnce() + Send,
 ) -> Result<(), String> {
     info!("Connecting to {}", url);
     let (ws_stream, _) = connect_async(&url)
@@ -32,6 +33,10 @@ pub async fn run_ws_pipeline(
 
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
     info!("WebSocket connected");
+    // Only now is "connected" true — the caller must not claim it earlier.
+    // A refused connect returns above and never reaches this line.
+    on_connected();
+    let _ = app.emit("connection-status", "connected");
 
     let app_recv = app.clone();
 
