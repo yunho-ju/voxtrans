@@ -13,8 +13,17 @@ VAD_WINDOW_DURATION_MS = VAD_WINDOW_SAMPLES * 1000 // SAMPLE_RATE  # 32ms
 
 # VAD thresholds (in VAD windows, not network chunks)
 VAD_THRESHOLD = 0.5
-VAD_SILENCE_DURATION_MS = 1000
-VAD_SILENCE_WINDOWS = VAD_SILENCE_DURATION_MS // VAD_WINDOW_DURATION_MS  # 31 windows at 1000ms / 32ms
+# T055 (research.md D10, FR-008): 1000 -> 550ms, meeting FR-008's own
+# <=550ms segmentation-boundary ceiling (spec.md:209, constitution v1.1.0)
+# exactly, and sitting 150ms above the 400ms breath-pause fixture
+# (pause_ko_400ms.wav) that must stay in one segment (17 windows vs 12.5)
+# -- validated by corpus replay for utterances up to VAD_INTERMEDIATE_SPEECH_S
+# (8s; tests/unit/test_vad_replay.py), not by argument. Longer listen-mode
+# utterances are additionally gated by VAD_INTERMEDIATE_SILENCE_WINDOWS
+# below, not this constant -- see that constant's own comment for a known,
+# pre-existing gap against the same 400ms floor (evidence/red-us3.txt).
+VAD_SILENCE_DURATION_MS = 550
+VAD_SILENCE_WINDOWS = VAD_SILENCE_DURATION_MS // VAD_WINDOW_DURATION_MS  # 17 windows at 550ms / 32ms
 VAD_MIN_SPEECH_MS = 250
 VAD_MIN_SPEECH_WINDOWS = VAD_MIN_SPEECH_MS // VAD_WINDOW_DURATION_MS  # ~7 windows
 VAD_MAX_SPEECH_S = 30
@@ -56,10 +65,19 @@ VAD_INTERMEDIATE_SPEECH_S = 8
 VAD_INTERMEDIATE_SPEECH_WINDOWS = VAD_INTERMEDIATE_SPEECH_S * 1000 // VAD_WINDOW_DURATION_MS  # ~156 windows
 VAD_INTERMEDIATE_SILENCE_MS = 400
 VAD_INTERMEDIATE_SILENCE_WINDOWS = VAD_INTERMEDIATE_SILENCE_MS // VAD_WINDOW_DURATION_MS  # ~6 windows
+# Pre-existing gap, found but deliberately not fixed by T052-T056 (Critic
+# round 1, T057): 400ms // 32ms floors to 12 windows = 384ms of actually
+# measured silence, which is below FR-008's own 400ms mid-sentence-pause
+# preservation floor for listen-mode utterances >= VAD_INTERMEDIATE_SPEECH_S
+# (8s) long. See evidence/red-us3.txt's "Pre-existing gap" section --
+# out of scope here; the same lever US5/real-usage feedback would tune.
 
-# Mic VAD (speak mode) — longer silence tolerance to avoid splitting speech
-MIC_VAD_SILENCE_DURATION_MS = 1200
-MIC_VAD_SILENCE_WINDOWS = MIC_VAD_SILENCE_DURATION_MS // VAD_WINDOW_DURATION_MS  # ~46 windows
+# Mic VAD (speak mode) — T055 (research.md D10, FR-008): 1200 -> 550ms. The
+# speak-mode path used the *larger* of the two holds and is the one on US1's
+# own latency budget, so lowering only VAD_SILENCE_DURATION_MS would have
+# left it 200ms worse than budgeted; both move together.
+MIC_VAD_SILENCE_DURATION_MS = 550
+MIC_VAD_SILENCE_WINDOWS = MIC_VAD_SILENCE_DURATION_MS // VAD_WINDOW_DURATION_MS  # 17 windows at 550ms / 32ms
 
 # Binary WebSocket prefixes
 AUDIO_PREFIX_SYSTEM = 0x01
