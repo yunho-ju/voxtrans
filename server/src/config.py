@@ -38,7 +38,11 @@ ASR_MODEL = "mlx-community/Qwen3-ASR-1.7B-8bit"
 # `.strip()` collapses both to `""`, which then falls through to the
 # default via `or`. A real override also has incidental surrounding
 # whitespace stripped.
-_TRANSLATION_MODEL_DEFAULT = "mlx-community/Qwen3-8B-4bit"
+# T035: user-accepted at T034 (evidence/model-comparison.md, decision
+# 2026-08-06T09:31:56+0900) — 4B measured 806 ms vs the incumbent 8B's
+# 1361 ms; the user selected 4B over 2B and reject-both after reviewing
+# the twenty side-by-side eval outputs.
+_TRANSLATION_MODEL_DEFAULT = "mlx-community/Qwen3.5-4B-MLX-4bit"
 TRANSLATION_MODEL = (os.environ.get("VOXTRANS_TRANSLATION_MODEL") or "").strip() or _TRANSLATION_MODEL_DEFAULT
 
 # TTS
