@@ -28,7 +28,7 @@ pub struct AppState {
 impl AppState {
     pub fn new() -> Self {
         Self {
-            server_url: Mutex::new("ws://192.168.0.10:8765/ws".to_string()),
+            server_url: Mutex::new("ws://127.0.0.1:8765/ws".to_string()),
             status: Mutex::new(ConnectionStatus::Disconnected),
             is_capturing: Mutex::new(false),
             stop_tx: Mutex::new(None),
