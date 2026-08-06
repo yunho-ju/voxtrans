@@ -8,8 +8,10 @@ interface Props {
   outputDevice: string;
   outputDeviceName: string;
   inputDevice: string;
-  mode: string;
-  onModeChange: (mode: string) => void;
+  /** Whether the typing-to-speak row renders. A preference, not a mode:
+   * sessions always run "both" (2026-08-06 user decision), so listening
+   * never stops while speaking or typing. */
+  showTypeInput: boolean;
   micMode: string;
   micActive: boolean;
   textInput: string;
@@ -61,8 +63,6 @@ async function pollUntilHealthy(port: number): Promise<boolean> {
   return false;
 }
 
-type ActiveTab = "listen" | "speak" | "type";
-
 const Controls: React.FC<Props> = ({
   status,
   onClear,
@@ -70,8 +70,7 @@ const Controls: React.FC<Props> = ({
   outputDevice,
   outputDeviceName,
   inputDevice,
-  mode,
-  onModeChange,
+  showTypeInput,
   micMode,
   micActive,
   textInput,
@@ -81,13 +80,6 @@ const Controls: React.FC<Props> = ({
   serverDir,
 }) => {
   const isCapturing = status === "connected" || status === "connecting";
-
-  // Derive initial tab from mode
-  const modeToTab = (m: string): ActiveTab =>
-    m === "speak" ? "speak" : "listen";
-  const [activeTab, setActiveTab] = useState<ActiveTab>(() =>
-    modeToTab(mode)
-  );
 
   // null = not checked yet, so the button/hint stay hidden until the first
   // check resolves rather than flashing on for a healthy server (C1).
@@ -203,35 +195,8 @@ const Controls: React.FC<Props> = ({
     }
   };
 
-  const handleTabChange = (tab: ActiveTab) => {
-    setActiveTab(tab);
-    if (tab === "listen") {
-      onModeChange("listen");
-    } else if (tab === "speak") {
-      onModeChange("speak");
-    } else if (tab === "type") {
-      onModeChange("type");
-    }
-  };
-
   return (
     <div style={styles.container}>
-      {/* Mode tabs */}
-      <div style={styles.tabs}>
-        {(["listen", "speak", "type"] as ActiveTab[]).map((tab) => (
-          <button
-            key={tab}
-            onClick={() => handleTabChange(tab)}
-            style={{
-              ...styles.tab,
-              ...(activeTab === tab ? styles.tabActive : {}),
-            }}
-          >
-            {tab === "listen" ? "듣기" : tab === "speak" ? "말하기" : "타이핑"}
-          </button>
-        ))}
-      </div>
-
       {/* Server offline banner: shown only once the health probe has come
           back unhealthy while disconnected (C1: healthy or not-yet-checked
           renders nothing here). */}
@@ -264,9 +229,11 @@ const Controls: React.FC<Props> = ({
         </div>
       )}
 
-      {/* Action area */}
+      {/* Action area — one view: listening runs the whole session, the mic
+          indicator and the (optional) typing row ride along instead of
+          living behind mode tabs. */}
       <div style={styles.actionArea}>
-        {activeTab === "listen" && (
+        <div style={styles.actionCol}>
           <div style={styles.actionRow}>
             <button
               onClick={handleToggle}
@@ -281,44 +248,22 @@ const Controls: React.FC<Props> = ({
               Clear
             </button>
           </div>
-        )}
-
-        {activeTab === "speak" && (
-          <div style={styles.actionCol}>
-            <div style={styles.actionRow}>
-              <button
-                onClick={handleToggle}
-                style={{
-                  ...styles.mainBtn,
-                  ...(isCapturing ? styles.mainBtnActive : {}),
-                }}
-              >
-                {isCapturing ? "■ Stop" : "▶ Start"}
-              </button>
+          {isCapturing && micMode === "push_to_talk" && (
+            <div
+              style={{
+                ...styles.pttIndicator,
+                backgroundColor: micActive
+                  ? "rgba(76, 175, 80, 0.25)"
+                  : "rgba(255,255,255,0.04)",
+                borderColor: micActive
+                  ? "rgba(76, 175, 80, 0.5)"
+                  : "rgba(255,255,255,0.1)",
+              }}
+            >
+              {micActive ? "● Recording..." : "SPACE — Push to Talk"}
             </div>
-            {isCapturing && micMode === "push_to_talk" && (
-              <div
-                style={{
-                  ...styles.pttIndicator,
-                  backgroundColor: micActive
-                    ? "rgba(76, 175, 80, 0.25)"
-                    : "rgba(255,255,255,0.04)",
-                  borderColor: micActive
-                    ? "rgba(76, 175, 80, 0.5)"
-                    : "rgba(255,255,255,0.1)",
-                }}
-              >
-                {micActive ? "● Recording..." : "SPACE — Push to Talk"}
-              </div>
-            )}
-            {isCapturing && micMode === "auto" && (
-              <div style={styles.pttIndicator}>Auto VAD active</div>
-            )}
-          </div>
-        )}
-
-        {activeTab === "type" && (
-          <div style={styles.actionCol}>
+          )}
+          {showTypeInput && (
             <div style={styles.typeRow}>
               <input
                 value={textInput}
@@ -348,23 +293,8 @@ const Controls: React.FC<Props> = ({
                 →
               </button>
             </div>
-            <div style={styles.actionRow}>
-              <button
-                onClick={handleToggle}
-                style={{
-                  ...styles.auxBtn,
-                  flex: 1,
-                  ...(isCapturing ? styles.auxBtnActive : {}),
-                }}
-              >
-                {isCapturing ? "■ Disconnect" : "▶ Connect"}
-              </button>
-              <button onClick={onClear} style={styles.auxBtn}>
-                Clear
-              </button>
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

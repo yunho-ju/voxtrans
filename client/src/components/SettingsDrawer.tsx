@@ -18,8 +18,11 @@ interface Props {
   onSourceLanguageChange: (lang: string) => void;
   targetLanguage: string;
   onTargetLanguageChange: (lang: string) => void;
-  mode: string;
-  onModeChange: (mode: string) => void;
+  /** Whether the typing-to-speak input row is shown in Controls. Sessions
+   * always run mode "both" (2026-08-06 user decision) — typing is an action
+   * some users never need, so its visibility is a preference, not a mode. */
+  showTypeInput: boolean;
+  onShowTypeInputChange: (show: boolean) => void;
   ttsVoice: string;
   onTtsVoiceChange: (voice: string) => void;
   outputDevice: string;
@@ -63,13 +66,6 @@ const LANGUAGE_OPTIONS = [
   { value: "Spanish", label: "Spanish" },
 ];
 
-const MODE_OPTIONS = [
-  { value: "listen", label: "Listen" },
-  { value: "speak", label: "Speak" },
-  { value: "both", label: "Both" },
-  { value: "type", label: "Type" },
-];
-
 const VOICE_OPTIONS = [
   { value: "Ryan", label: "Ryan (EN)" },
   { value: "Aiden", label: "Aiden (EN)" },
@@ -90,8 +86,8 @@ const SettingsDrawer: React.FC<Props> = ({
   onSourceLanguageChange,
   targetLanguage,
   onTargetLanguageChange,
-  mode,
-  onModeChange,
+  showTypeInput,
+  onShowTypeInputChange,
   ttsVoice,
   onTtsVoiceChange,
   outputDevice,
@@ -138,20 +134,6 @@ const SettingsDrawer: React.FC<Props> = ({
           aria-label="Server directory"
         />
         <div style={styles.settingRow}>
-          <label style={styles.label}>Mode</label>
-          <select
-            value={mode}
-            onChange={(e) => onModeChange(e.target.value)}
-            style={styles.select}
-          >
-            {MODE_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div style={styles.settingRow}>
           <label style={styles.label}>Source</label>
           <select
             value={sourceLanguage}
@@ -179,22 +161,20 @@ const SettingsDrawer: React.FC<Props> = ({
             ))}
           </select>
         </div>
-        {(mode === "speak" || mode === "both" || mode === "type") && (
-          <div style={styles.settingRow}>
-            <label style={styles.label}>Speak To</label>
-            <select
-              value={speakTargetLanguage}
-              onChange={(e) => onSpeakTargetLanguageChange(e.target.value)}
-              style={styles.select}
-            >
-              {LANGUAGE_OPTIONS.filter((o) => o.value !== "").map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
+        <div style={styles.settingRow}>
+          <label style={styles.label}>Speak To</label>
+          <select
+            value={speakTargetLanguage}
+            onChange={(e) => onSpeakTargetLanguageChange(e.target.value)}
+            style={styles.select}
+          >
+            {LANGUAGE_OPTIONS.filter((o) => o.value !== "").map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
         <div style={styles.settingRow}>
           <label style={styles.label}>Output</label>
           <select
@@ -227,7 +207,30 @@ const SettingsDrawer: React.FC<Props> = ({
             ))}
           </select>
         </div>
-        {(mode === "speak" || mode === "both") && (
+        <div style={styles.settingRow}>
+          <label style={styles.label}>타이핑 입력</label>
+          <div style={{ display: "flex", gap: "4px", flex: 1 }}>
+            <button
+              onClick={() => onShowTypeInputChange(true)}
+              style={{
+                ...styles.toggleBtn,
+                ...(showTypeInput ? styles.toggleActive : {}),
+              }}
+            >
+              표시
+            </button>
+            <button
+              onClick={() => onShowTypeInputChange(false)}
+              style={{
+                ...styles.toggleBtn,
+                ...(!showTypeInput ? styles.toggleActive : {}),
+              }}
+            >
+              숨김
+            </button>
+          </div>
+        </div>
+        {(
           <>
             <div style={styles.settingRow}>
               <label style={styles.label}>Voice</label>

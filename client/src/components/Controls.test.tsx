@@ -31,8 +31,7 @@ const baseProps = {
   outputDevice: "",
   outputDeviceName: "",
   inputDevice: "",
-  mode: "listen",
-  onModeChange: () => {},
+  showTypeInput: true,
   micMode: "auto",
   micActive: false,
   textInput: "",
@@ -321,5 +320,19 @@ describe("when the server becomes healthy on its own while the banner is showing
     });
 
     expect(screen.queryByTestId("start-server-btn")).toBeNull();
+  });
+});
+
+describe("the typing row is a preference, not a mode", () => {
+  it("renders the type input when showTypeInput is true", async () => {
+    render(<Controls {...baseProps} showTypeInput={true} />);
+    await flushHealthCheck();
+    expect(screen.getByPlaceholderText("번역할 텍스트 입력...")).toBeTruthy();
+  });
+
+  it("hides the type input when showTypeInput is false", async () => {
+    render(<Controls {...baseProps} showTypeInput={false} />);
+    await flushHealthCheck();
+    expect(screen.queryByPlaceholderText("번역할 텍스트 입력...")).toBeNull();
   });
 });

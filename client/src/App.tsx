@@ -49,8 +49,17 @@ const App: React.FC = () => {
   );
   const [sourceLanguage, setSourceLanguage] = useState("auto");
   const [targetLanguage, setTargetLanguage] = useState("Korean");
-  const [mode, setMode] = useState("listen");
+  // Sessions always run mode "both" (2026-08-06 user decision): listening
+  // never stops; speaking and typing are actions inside the same session,
+  // not modes to switch into. The server has supported "both" all along
+  // (ws_handler routes system audio and mic audio independently).
+  const mode = "both";
   const [ttsVoice, setTtsVoice] = useState("Ryan");
+  // Typing-to-speak is a per-user preference, not a mode — some users only
+  // ever speak, so the row can be hidden entirely from Settings.
+  const [showTypeInput, setShowTypeInput] = useState(
+    () => localStorage.getItem("voxtrans_show_type_input") !== "false"
+  );
   const [outputDevice, setOutputDevice] = useState("");
   const [outputDevices, setOutputDevices] = useState<OutputDevice[]>([]);
   const [inputDevice, setInputDevice] = useState(
@@ -255,13 +264,10 @@ const App: React.FC = () => {
     [sendConfigure]
   );
 
-  const handleModeChange = useCallback(
-    async (m: string) => {
-      setMode(m);
-      await sendConfigure({ mode: m });
-    },
-    [sendConfigure]
-  );
+  const handleShowTypeInputChange = useCallback((show: boolean) => {
+    setShowTypeInput(show);
+    localStorage.setItem("voxtrans_show_type_input", String(show));
+  }, []);
 
   const handleTtsVoiceChange = useCallback(
     async (v: string) => {
@@ -401,8 +407,8 @@ const App: React.FC = () => {
             onSourceLanguageChange={handleSourceLanguageChange}
             targetLanguage={targetLanguage}
             onTargetLanguageChange={handleTargetLanguageChange}
-            mode={mode}
-            onModeChange={handleModeChange}
+            showTypeInput={showTypeInput}
+            onShowTypeInputChange={handleShowTypeInputChange}
             ttsVoice={ttsVoice}
             onTtsVoiceChange={handleTtsVoiceChange}
             outputDevice={outputDevice}
@@ -434,8 +440,7 @@ const App: React.FC = () => {
         }
         inputDevice={inputDevice}
         serverDir={serverDir}
-        mode={mode}
-        onModeChange={handleModeChange}
+        showTypeInput={showTypeInput}
         micMode={micMode}
         micActive={micActive}
         textInput={textInput}

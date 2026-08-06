@@ -365,3 +365,18 @@ describe("permission-error deep-links to System Settings", () => {
     expect(screen.queryByText("설정 열기")).toBeNull();
   });
 });
+
+describe("sessions always run mode both (no mode tabs)", () => {
+  it("send_configure carries mode: both once connected", async () => {
+    render(<App />);
+
+    await act(async () => {
+      emit("connection-status", "connected");
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      "send_configure",
+      expect.objectContaining({ mode: "both" })
+    );
+  });
+});
