@@ -63,10 +63,11 @@ from pathlib import Path
 
 from . import fetch_models, harness
 
-SUITES: tuple[str, ...] = ("e2e", "translation", "tts_chunks", "subtitle", "memory")
+SUITES: tuple[str, ...] = ("e2e", "asr", "translation", "tts_chunks", "subtitle", "memory")
 
 DEFAULT_ITERATIONS: dict[str, int] = {
     "e2e": 1,
+    "asr": 3,
     "translation": 3,
     "tts_chunks": 20,
     "subtitle": 1,
@@ -85,10 +86,12 @@ _WARMUP_FIXTURE = _FIXTURES_DIR / "warmup_500ms.wav"
 # (T020 round-1 major 4) -- listed here too (Critic T020 round-2 minor 1)
 # so a missing warm-up fixture fails this precondition (exit 2, before any
 # clock starts) instead of surfacing only once `e2e.run()` is already
-# mid-flight. Duration ranges mirror `tests/fixtures/build_fixtures.sh`'s
+# mid-flight. `asr` (T037c-4) reads both fixtures too, the same shape as
+# `e2e`'s ASR leg. Duration ranges mirror `tests/fixtures/build_fixtures.sh`'s
 # own `verify_wav` calls for each file.
 _SUITE_FIXTURES: dict[str, tuple[tuple[Path, float, float], ...]] = {
     "e2e": ((_E2E_FIXTURE, 4.9, 5.1), (_WARMUP_FIXTURE, 0.4, 0.6)),
+    "asr": ((_E2E_FIXTURE, 4.9, 5.1), (_WARMUP_FIXTURE, 0.4, 0.6)),
     "subtitle": ((_E2E_FIXTURE, 4.9, 5.1),),
 }
 
@@ -113,18 +116,23 @@ def _check_imports() -> PreconditionFailure | None:
     return None
 
 
-def _check_models(model_override: str | None) -> PreconditionFailure | None:
-    # Validate the *resolved* translation model, not only an explicit
-    # `--model` (Critic round-2 minor 1): `VOXTRANS_TRANSLATION_MODEL` can
-    # also be set ambiently (no `--model` flag at all), and an invalid
-    # ambient override must fail this precondition -- exit 2, before any
-    # clock starts -- rather than surface only mid-run as a suite crash or,
-    # worse, a silent download inside a timed region.
+def _check_models(
+    model_override: str | None, asr_model_override: str | None = None
+) -> PreconditionFailure | None:
+    # Validate the *resolved* translation and ASR models, not only an
+    # explicit `--model`/`--asr-model` (Critic round-2 minor 1; T037c-3/C3
+    # mirrors the same reasoning for `--asr-model`): `VOXTRANS_TRANSLATION_MODEL`/
+    # `VOXTRANS_ASR_MODEL` can also be set ambiently (no flag at all), and an
+    # invalid ambient override must fail this precondition -- exit 2, before
+    # any clock starts -- rather than surface only mid-run as a suite crash
+    # or, worse, a silent download inside a timed region.
     from src import config as src_config
 
     resolved_translation_model = model_override or src_config.TRANSLATION_MODEL
+    resolved_asr_model = asr_model_override or src_config.ASR_MODEL
     repo_ids = set(fetch_models.MODEL_REPOS)
     repo_ids.add(resolved_translation_model)
+    repo_ids.add(resolved_asr_model)
     for repo_id in sorted(repo_ids):
         result = fetch_models.verify_model(repo_id)
         if not result.ok:
@@ -188,7 +196,7 @@ def _check_subtitle_server_port_free(suite: str) -> PreconditionFailure | None:
 
 
 def run_preconditions(
-    suite: str, model_override: str | None
+    suite: str, model_override: str | None, asr_model_override: str | None = None
 ) -> tuple[PreconditionFailure | None, harness.Hardware | None]:
     """Run the five checks, returning `(failure, hardware)`.
 
@@ -206,7 +214,7 @@ def run_preconditions(
     """
     for check in (
         _check_imports,
-        lambda: _check_models(model_override),
+        lambda: _check_models(model_override, asr_model_override),
         lambda: _check_fixture(suite),
         lambda: _check_subtitle_server_port_free(suite),
     ):
@@ -259,12 +267,38 @@ def _translation_model_env_override(model: str | None):
             os.environ[_TRANSLATION_MODEL_ENV_VAR] = previous
 
 
-def _resolve_config(model_override: str | None) -> dict:
+_ASR_MODEL_ENV_VAR = "VOXTRANS_ASR_MODEL"
+
+
+@contextlib.contextmanager
+def _asr_model_env_override(model: str | None):
+    """Temporarily set `VOXTRANS_ASR_MODEL` to `model` for the duration of
+    the `with` block, restoring the previous value (or its absence) on
+    every exit path -- exact mirror of `_translation_model_env_override`
+    above (T037c-4/C4): `--asr-model` must reach every model-loading path
+    this run touches -- `memory`'s worker subprocess, and any in-process
+    module that reads `src.config.ASR_MODEL` at its own first import (e.g.
+    `asr.py`'s `ASREngine()`) -- not just the resolved `config` dict."""
+    if not model:
+        yield
+        return
+    previous = os.environ.get(_ASR_MODEL_ENV_VAR)
+    os.environ[_ASR_MODEL_ENV_VAR] = model
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(_ASR_MODEL_ENV_VAR, None)
+        else:
+            os.environ[_ASR_MODEL_ENV_VAR] = previous
+
+
+def _resolve_config(model_override: str | None, asr_model_override: str | None = None) -> dict:
     from src import config as src_config
 
     return {
         "translation_model": model_override or src_config.TRANSLATION_MODEL,
-        "asr_model": src_config.ASR_MODEL,
+        "asr_model": asr_model_override or src_config.ASR_MODEL,
         "tts_model": src_config.TTS_MODEL,
         "vad_silence_ms": str(src_config.VAD_SILENCE_DURATION_MS),
         "mic_vad_silence_ms": str(src_config.MIC_VAD_SILENCE_DURATION_MS),
@@ -278,6 +312,8 @@ def _load_suite(suite: str):
         from .suites import tts_chunks as suite_mod
     elif suite == "e2e":
         from .suites import e2e as suite_mod
+    elif suite == "asr":
+        from .suites import asr as suite_mod
     elif suite == "memory":
         from .suites import memory as suite_mod
     elif suite == "subtitle":
@@ -296,6 +332,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--label", default="adhoc")
     parser.add_argument("--iterations", type=int, default=None)
     parser.add_argument("--model", default=None)
+    parser.add_argument("--asr-model", default=None)
     parser.add_argument("--force", action="store_true")
     return parser
 
@@ -304,6 +341,8 @@ def _format_command(suite: str, args: argparse.Namespace, iterations: int) -> st
     parts = ["python", "-m", "bench.run", "--suite", suite, "--label", args.label, "--iterations", str(iterations)]
     if args.model:
         parts += ["--model", args.model]
+    if args.asr_model:
+        parts += ["--asr-model", args.asr_model]
     if args.force:
         parts.append("--force")
     return " ".join(parts)
@@ -344,18 +383,20 @@ def _run_one(suite: str, args: argparse.Namespace) -> int:
         )
         return 2
 
-    # Everything below runs inside the env-override window (Critic round-2
-    # major 3): `--model` must reach every model-loading path this run
-    # touches -- preconditions' own snapshot checks, the resolved `config`
-    # dict, and any subprocess a suite spawns -- not just the `config` dict
-    # alone. See `_translation_model_env_override`'s docstring.
-    with _translation_model_env_override(args.model):
-        failure, hw = run_preconditions(suite, args.model)
+    # Everything below runs inside both env-override windows (Critic round-2
+    # major 3; T037c-4/C4 for `--asr-model`): `--model`/`--asr-model` must
+    # each reach every model-loading path this run touches --
+    # preconditions' own snapshot checks, the resolved `config` dict, and
+    # any subprocess a suite spawns -- not just the `config` dict alone. See
+    # `_translation_model_env_override`'s/`_asr_model_env_override`'s
+    # docstrings.
+    with _translation_model_env_override(args.model), _asr_model_env_override(args.asr_model):
+        failure, hw = run_preconditions(suite, args.model, args.asr_model)
         if failure is not None:
             print(f"precondition failed [{failure.check}]: {failure.reason}", file=sys.stderr)
             return failure.exit_code
 
-        config = _resolve_config(args.model)
+        config = _resolve_config(args.model, args.asr_model)
         iterations = args.iterations or DEFAULT_ITERATIONS[suite]
         suite_mod = _load_suite(suite)
 

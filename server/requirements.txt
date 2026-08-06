@@ -14,3 +14,10 @@ mlx-lm>=0.30.0
 scipy>=1.11.0      # src/tts.py:96,110 — voice-clone reference resample
 mlx>=0.29.0        # src/tts.py:50 — mx.array / mx.eval in the TTS worker
 pydantic>=2.0.0    # src/main.py:7 — request/response models on /translate
+
+# T037c-2 (evidence/asr-backend-probe.md): mlx_audio.stt cannot transcribe
+# with mlx-community/whisper-large-v3-turbo -- its snapshot ships no
+# HuggingFace processor files, and mlx_audio's whisper wrapper requires one
+# (probed: load() succeeds, generate() raises "Processor not found").
+# mlx-whisper bundles its own tokenizer instead, so it does not need one.
+mlx-whisper>=0.4.0 # src/asr.py — ASREngine.load/transcribe's whisper-family backend

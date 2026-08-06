@@ -35,7 +35,15 @@ PORT = 8765
 MAX_SESSIONS = 5
 
 # ASR
-ASR_MODEL = "mlx-community/Qwen3-ASR-1.7B-8bit"
+# `VOXTRANS_ASR_MODEL` overrides the default (research.md D-ASR, FR-003,
+# tasks.md T037b) with the exact same override idiom `TRANSLATION_MODEL`
+# below uses: an empty or whitespace-only value is treated as unset (not a
+# literal override), and a real override has incidental surrounding
+# whitespace stripped. `src/asr.py` continues to import `ASR_MODEL` (not
+# this module), so resolution time and propagation match the translation
+# path exactly.
+_ASR_MODEL_DEFAULT = "mlx-community/Qwen3-ASR-1.7B-8bit"
+ASR_MODEL = (os.environ.get("VOXTRANS_ASR_MODEL") or "").strip() or _ASR_MODEL_DEFAULT
 
 # Translation
 # `VOXTRANS_TRANSLATION_MODEL` overrides the default (research.md D8,

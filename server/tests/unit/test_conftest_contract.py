@@ -93,6 +93,7 @@ def test_feature_model_repos_matches_hardcoded_research_md_d2_mirror() -> None:
         "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit",
         "mlx-community/Qwen3.5-4B-MLX-4bit",
         "mlx-community/Qwen3.5-2B-4bit",
+        "mlx-community/whisper-large-v3-turbo",
     )
 
 
@@ -234,15 +235,15 @@ def test_needs_models_bare_marker_runs_when_all_default_snapshots_present(
 def test_needs_models_bare_marker_skips_when_only_some_default_snapshots_present(
     pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # ANY-missing-skips, not ALL-missing-skips: 4 of 5 FEATURE_MODEL_REPOS
-    # seeded, deliberately omitting FEATURE_MODEL_REPOS[1] (not the first
-    # entry — a naive `repo_ids[:1]` check would only look at the first,
-    # present, entry and wrongly conclude nothing is missing).
+    # ANY-missing-skips, not ALL-missing-skips: all but one of
+    # FEATURE_MODEL_REPOS seeded, deliberately omitting FEATURE_MODEL_REPOS[1]
+    # (not the first entry — a naive `repo_ids[:1]` check would only look at
+    # the first, present, entry and wrongly conclude nothing is missing).
     missing_index = 1
     present_repo_ids = [
         repo_id for i, repo_id in enumerate(FEATURE_MODEL_REPOS) if i != missing_index
     ]
-    assert len(present_repo_ids) == 4  # sanity: genuinely 4 of 5, not all 5
+    assert len(present_repo_ids) == len(FEATURE_MODEL_REPOS) - 1  # sanity: exactly one missing
     hf_home = tmp_path / "hf-home"
     _seed_fake_hf_home(hf_home, present_repo_ids)
     monkeypatch.setenv("HF_HOME", str(hf_home))

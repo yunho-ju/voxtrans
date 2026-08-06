@@ -130,6 +130,7 @@ def test_model_repos_matches_research_md_d2() -> None:
         "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit",
         "mlx-community/Qwen3.5-4B-MLX-4bit",
         "mlx-community/Qwen3.5-2B-4bit",
+        "mlx-community/whisper-large-v3-turbo",
     )
 
 
@@ -493,7 +494,7 @@ def test_main_no_args_exits_0_when_everything_already_complete(
     assert exit_code == 0
     assert fetch_calls == []  # idempotent: already complete, so no fetch attempted
     out = capsys.readouterr().out
-    assert out.count("OK") == 6  # five models + Silero
+    assert out.count("OK") == len(fetch_models.MODEL_REPOS) + 1  # every model + Silero
     assert fetch_models.SILERO_VAD_REPO in out
 
 
@@ -523,7 +524,7 @@ def test_main_verify_only_exits_2_when_a_model_is_missing(tmp_path: Path) -> Non
 
 
 def test_main_verify_only_exits_2_when_only_silero_is_missing(tmp_path: Path) -> None:
-    # All five models complete, Silero cache absent: this is the case that
+    # All MODEL_REPOS complete, Silero cache absent: this is the case that
     # would silently pass if main() ever stopped checking the Silero
     # precondition (Critic finding 1, round 1, mutant 2).
     hub_dir = tmp_path / "hub"
@@ -566,9 +567,9 @@ def test_main_no_args_exits_2_when_a_model_is_missing_and_fetch_fails(
 def test_main_verify_only_never_calls_snapshot_download_or_torch_hub_load(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Nothing seeded at all: five models and Silero all missing. If
-    # --verify-only stopped being honored anywhere in main()'s wiring, this
-    # is the case that would reach the network for every one of the six
+    # Nothing seeded at all: every MODEL_REPOS entry and Silero all missing.
+    # If --verify-only stopped being honored anywhere in main()'s wiring,
+    # this is the case that would reach the network for every one of those
     # assets (Critic finding 1, round 1, mutant 3).
     hub_dir = tmp_path / "hub"
     hub_dir.mkdir()

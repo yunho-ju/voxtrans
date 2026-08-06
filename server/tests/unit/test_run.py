@@ -23,15 +23,22 @@ import bench.run as run
 import src.config as src_config
 
 _ENV_VAR = "VOXTRANS_TRANSLATION_MODEL"
+_ASR_ENV_VAR = "VOXTRANS_ASR_MODEL"
 
 
 def _args(
-    suite: str = "e2e", label: str = "test", iterations: int = 1, force: bool = False, model: str | None = None
+    suite: str = "e2e",
+    label: str = "test",
+    iterations: int = 1,
+    force: bool = False,
+    model: str | None = None,
+    asr_model: str | None = None,
 ) -> argparse.Namespace:
     return run.build_parser().parse_args(
         ["--suite", suite, "--label", label, "--iterations", str(iterations)]
         + (["--force"] if force else [])
         + (["--model", model] if model else [])
+        + (["--asr-model", asr_model] if asr_model else [])
     )
 
 
@@ -75,9 +82,25 @@ class _EnvCapturingStubSuite:
         return [harness.stage_timing("asr", 100.0)], [{"iteration": 0}]
 
 
+class _AsrEnvCapturingStubSuite:
+    """Same shape as `_EnvCapturingStubSuite`, capturing `VOXTRANS_ASR_MODEL`
+    instead -- T037c-4/C4's mirror of the translation env-propagation
+    mechanism (`_asr_model_env_override`)."""
+
+    def __init__(self, *, raises: Exception | None = None):
+        self.raises = raises
+        self.captured_env: str | None = "not-yet-called"
+
+    def run(self, iterations: int, config: dict):
+        self.captured_env = os.environ.get(_ASR_ENV_VAR)
+        if self.raises is not None:
+            raise self.raises
+        return [harness.stage_timing("asr", 100.0)], [{"iteration": 0}]
+
+
 def _pass_all_precondition_checks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(run, "_check_imports", lambda: None)
-    monkeypatch.setattr(run, "_check_models", lambda model_override: None)
+    monkeypatch.setattr(run, "_check_models", lambda model_override, asr_model_override=None: None)
     monkeypatch.setattr(run, "_check_fixture", lambda suite: None)
     monkeypatch.setattr(run, "_check_subtitle_server_port_free", lambda suite: None)
 
@@ -213,14 +236,15 @@ def test_force_flag_bypasses_the_overwrite_guard(monkeypatch, tmp_path):
 @pytest.mark.parametrize(
     "codes, expected",
     [
-        ([0, 0, 0, 0, 0], 0),
-        ([0, 1, 0, 0, 0], 1),
-        ([0, 1, 3, 0, 0], 3),
-        ([0, 1, 3, 2, 0], 2),
-        ([3, 2, 1, 0, 0], 2),
+        ([0, 0, 0, 0, 0, 0], 0),
+        ([0, 1, 0, 0, 0, 0], 1),
+        ([0, 1, 3, 0, 0, 0], 3),
+        ([0, 1, 3, 2, 0, 0], 2),
+        ([3, 2, 1, 0, 0, 0], 2),
     ],
 )
 def test_main_exit_code_priority_is_2_then_3_then_1(monkeypatch, codes, expected):
+    assert len(codes) == len(run.SUITES), "one exit code per suite `--suite all` runs"
     codes_iter = iter(codes)
     monkeypatch.setattr(run, "_run_one", lambda suite, args: next(codes_iter))
 
@@ -348,3 +372,150 @@ def test_check_models_prefers_the_explicit_model_flag_over_the_ambient_value(mon
 
     assert failure is None
     assert "acme/explicit-flag-model" in checked_repo_ids
+
+
+# --- T037c-3/C3: `_check_models` validates the *resolved* ASR model too ----
+# --- (ambient VOXTRANS_ASR_MODEL or `--asr-model`), mirroring the ----------
+# --- translation-model checks above -----------------------------------------
+
+
+def test_check_models_validates_the_ambient_resolved_asr_model_without_an_asr_model_flag(monkeypatch):
+    monkeypatch.setattr(src_config, "ASR_MODEL", "ambiently-overridden/fake-asr-model")
+    checked_repo_ids: list[str] = []
+
+    def _fake_verify_model(repo_id):
+        checked_repo_ids.append(repo_id)
+        return fetch_models.VerifyResult(repo_id, repo_id != "ambiently-overridden/fake-asr-model")
+
+    monkeypatch.setattr(run.fetch_models, "verify_model", _fake_verify_model)
+    monkeypatch.setattr(run.fetch_models, "verify_silero_vad", lambda: fetch_models.VerifyResult("silero-vad", True))
+
+    failure = run._check_models(None)
+
+    assert "ambiently-overridden/fake-asr-model" in checked_repo_ids
+    assert failure is not None
+    assert failure.check == "model_snapshot"
+    assert failure.exit_code == 2
+    assert "ambiently-overridden/fake-asr-model" in failure.reason
+
+
+def test_check_models_prefers_the_explicit_asr_model_flag_over_the_ambient_value(monkeypatch):
+    monkeypatch.setattr(src_config, "ASR_MODEL", "ambient/should-not-be-used-when-flag-given")
+    checked_repo_ids: list[str] = []
+
+    def _fake_verify_model(repo_id):
+        checked_repo_ids.append(repo_id)
+        return fetch_models.VerifyResult(repo_id, repo_id != "acme/explicit-asr-flag-model")
+
+    monkeypatch.setattr(run.fetch_models, "verify_model", _fake_verify_model)
+    monkeypatch.setattr(run.fetch_models, "verify_silero_vad", lambda: fetch_models.VerifyResult("silero-vad", True))
+
+    failure = run._check_models(None, "acme/explicit-asr-flag-model")
+
+    assert "acme/explicit-asr-flag-model" in checked_repo_ids
+    assert failure is not None
+    assert "acme/explicit-asr-flag-model" in failure.reason
+
+
+def test_check_models_reports_exit_2_and_names_a_missing_asr_model_in_stderr(monkeypatch, tmp_path, capsys):
+    """Brief acceptance condition 7 / C3: a nonexistent `--asr-model` id
+    exits 2 with that id named in stderr."""
+    monkeypatch.setattr(run.harness, "EVIDENCE_DIR", tmp_path)
+    monkeypatch.setattr(run, "_check_imports", lambda: None)
+    monkeypatch.setattr(run, "_check_fixture", lambda suite: None)
+    monkeypatch.setattr(run, "_check_subtitle_server_port_free", lambda suite: None)
+
+    def _fake_verify_model(repo_id):
+        return fetch_models.VerifyResult(repo_id, repo_id != "acme/does-not-exist")
+
+    monkeypatch.setattr(run.fetch_models, "verify_model", _fake_verify_model)
+    monkeypatch.setattr(run.fetch_models, "verify_silero_vad", lambda: fetch_models.VerifyResult("silero-vad", True))
+
+    exit_code = run._run_one("asr", _args(suite="asr", asr_model="acme/does-not-exist"))
+
+    assert exit_code == 2
+    assert "acme/does-not-exist" in capsys.readouterr().err
+
+
+# --- T037c-4/C4: `--asr-model` propagates through the env, mirroring -------
+# --- `--model`'s VOXTRANS_TRANSLATION_MODEL propagation exactly ------------
+
+
+def _clear_asr_env_var():
+    os.environ.pop(_ASR_ENV_VAR, None)
+
+
+def test_run_one_sets_the_asr_model_env_var_for_the_duration_of_the_suite_run(monkeypatch, tmp_path):
+    monkeypatch.setattr(run.harness, "EVIDENCE_DIR", tmp_path)
+    _pass_all_precondition_checks(monkeypatch)
+    monkeypatch.setattr(run.harness, "capture_hardware", lambda: _hardware())
+    _clear_asr_env_var()
+    stub = _AsrEnvCapturingStubSuite()
+    monkeypatch.setattr(run, "_load_suite", lambda suite: stub)
+
+    exit_code = run._run_one("asr", _args(suite="asr", asr_model="acme/candidate-asr-model"))
+
+    assert exit_code == 0
+    assert stub.captured_env == "acme/candidate-asr-model", (
+        "the suite's run() must see the override in the live environment"
+    )
+    assert os.environ.get(_ASR_ENV_VAR) is None, "the env var must be restored once the run finishes"
+
+
+def test_run_one_restores_a_previously_set_asr_model_env_var_after_finishing(monkeypatch, tmp_path):
+    monkeypatch.setattr(run.harness, "EVIDENCE_DIR", tmp_path)
+    _pass_all_precondition_checks(monkeypatch)
+    monkeypatch.setattr(run.harness, "capture_hardware", lambda: _hardware())
+    os.environ[_ASR_ENV_VAR] = "prior-ambient-asr-value"
+    stub = _AsrEnvCapturingStubSuite()
+    monkeypatch.setattr(run, "_load_suite", lambda suite: stub)
+
+    try:
+        exit_code = run._run_one("asr", _args(suite="asr", asr_model="acme/candidate-asr-model"))
+        assert exit_code == 0
+        assert stub.captured_env == "acme/candidate-asr-model"
+        assert os.environ.get(_ASR_ENV_VAR) == "prior-ambient-asr-value"
+    finally:
+        _clear_asr_env_var()
+
+
+def test_run_one_does_not_touch_the_asr_model_env_var_when_no_asr_model_flag_is_given(monkeypatch, tmp_path):
+    monkeypatch.setattr(run.harness, "EVIDENCE_DIR", tmp_path)
+    _pass_all_precondition_checks(monkeypatch)
+    monkeypatch.setattr(run.harness, "capture_hardware", lambda: _hardware())
+    _clear_asr_env_var()
+    stub = _AsrEnvCapturingStubSuite()
+    monkeypatch.setattr(run, "_load_suite", lambda suite: stub)
+
+    exit_code = run._run_one("asr", _args(suite="asr", asr_model=None))
+
+    assert exit_code == 0
+    assert stub.captured_env is None, "no --asr-model given must mean no env mutation at all"
+
+
+def test_run_one_restores_the_asr_model_env_var_even_when_the_suite_crashes(monkeypatch, tmp_path):
+    monkeypatch.setattr(run.harness, "EVIDENCE_DIR", tmp_path)
+    _pass_all_precondition_checks(monkeypatch)
+    monkeypatch.setattr(run.harness, "capture_hardware", lambda: _hardware())
+    _clear_asr_env_var()
+    crashing = _AsrEnvCapturingStubSuite(raises=RuntimeError("synthetic crash"))
+    monkeypatch.setattr(run, "_load_suite", lambda suite: crashing)
+
+    exit_code = run._run_one("asr", _args(suite="asr", asr_model="acme/candidate-asr-model"))
+
+    assert exit_code == 2
+    assert crashing.captured_env == "acme/candidate-asr-model"
+    assert os.environ.get(_ASR_ENV_VAR) is None, "a crash must not leak the override into later runs"
+
+
+# --- T037c-4/C4: `_resolve_config`'s `asr_model` key reflects the override -
+
+
+def test_resolve_config_asr_model_key_reflects_the_explicit_override():
+    config = run._resolve_config(None, "acme/candidate-asr-model")
+    assert config["asr_model"] == "acme/candidate-asr-model"
+
+
+def test_resolve_config_asr_model_key_falls_back_to_config_default_when_no_override():
+    config = run._resolve_config(None, None)
+    assert config["asr_model"] == src_config.ASR_MODEL

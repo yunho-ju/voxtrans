@@ -3,8 +3,10 @@
 
 Two kinds of local asset are covered:
 
-* The five Hugging Face model repos every suite in `contracts/benchmark-cli.md`
-  depends on (`MODEL_REPOS`). `ensure_model()` verifies a repo's local
+* The Hugging Face model repos every suite in `contracts/benchmark-cli.md`
+  depends on (`MODEL_REPOS`) -- the five feature models plus, from T037c, the
+  `whisper-large-v3-turbo` ASR candidate `--asr-model` can select. `ensure_model()`
+  verifies a repo's local
   snapshot is *complete* (not merely present — see `check_snapshot_completeness`)
   and fetches it via `snapshot_download` only when it is missing or partial.
 * The Silero VAD, which `src/vad.py` loads via `torch.hub.load` from GitHub
@@ -55,7 +57,8 @@ from huggingface_hub.errors import HFValidationError, LocalEntryNotFoundError
 
 logger = logging.getLogger(__name__)
 
-# The five model repositories every feature depends on (research.md D2).
+# The model repositories every feature depends on (research.md D2), plus the
+# T037c ASR candidate `--asr-model` can select in addition to the incumbent.
 # Hand-maintained mirror of research.md D2 and of
 # tests/conftest.py:FEATURE_MODEL_REPOS — keep all three in sync.
 MODEL_REPOS: tuple[str, ...] = (
@@ -64,6 +67,7 @@ MODEL_REPOS: tuple[str, ...] = (
     "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit",
     "mlx-community/Qwen3.5-4B-MLX-4bit",
     "mlx-community/Qwen3.5-2B-4bit",
+    "mlx-community/whisper-large-v3-turbo",
 )
 
 # Silero VAD is not a Hugging Face repo; torch.hub clones it from GitHub.
@@ -131,8 +135,9 @@ def check_snapshot_completeness(snapshot_dir: Path) -> VerifyResult:
     3. The index file itself is truncated/corrupt (see `_CorruptIndexError`).
 
     Scope: this verifies the weight shards named in `model.safetensors.index.json`
-    (in practice, on all five `MODEL_REPOS`, that is a single `model.safetensors`
-    file each — none of the five is actually sharded) plus mid-transfer blob
+    (in practice, none of `MODEL_REPOS` ships one — each is a single unsharded
+    weights file, `model.safetensors` or, for the whisper candidate,
+    `weights.safetensors`) plus mid-transfer blob
     markers. Other files a snapshot carries (tokenizer/config files, the TTS
     repo's `speech_tokenizer/` subdirectory) are presence-checked only via the
     snapshot resolving at all, the same guarantee `has_local_snapshot` in

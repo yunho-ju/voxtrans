@@ -55,14 +55,17 @@ if str(_SERVER_DIR) not in sys.path:
 
 _TESTS_DIR = Path(__file__).resolve().parent
 
-# The five model repos every feature depends on (research.md D2). This is
-# what a bare `@pytest.mark.needs_models` (no repo ids) checks.
+# The model repos every feature depends on (research.md D2), plus the T037c
+# ASR candidate `--asr-model` can select in addition to the incumbent. This
+# is what a bare `@pytest.mark.needs_models` (no repo ids) checks. Kept in
+# sync with `bench.fetch_models.MODEL_REPOS` (see that module's own comment).
 FEATURE_MODEL_REPOS = (
     "mlx-community/Qwen3-ASR-1.7B-8bit",
     "mlx-community/Qwen3-8B-4bit",
     "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit",
     "mlx-community/Qwen3.5-4B-MLX-4bit",
     "mlx-community/Qwen3.5-2B-4bit",
+    "mlx-community/whisper-large-v3-turbo",
 )
 
 
