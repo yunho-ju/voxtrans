@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-shell";
 import TranscriptionOverlay from "./components/TranscriptionOverlay";
 import StatusBar from "./components/StatusBar";
 import Controls from "./components/Controls";
@@ -12,6 +13,27 @@ interface OutputDevice {
   name: string;
   uid: string;
 }
+
+type PermissionKind = "screen_capture" | "microphone";
+
+interface PermissionErrorPayload {
+  kind: PermissionKind;
+  message: string;
+}
+
+// macOS System Settings deep links for each permission kind `commands.rs`'s
+// two capture-start catch sites can report via the `permission-error` event.
+const PERMISSION_SETTINGS_URLS: Record<PermissionKind, string> = {
+  screen_capture:
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+  microphone:
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+};
+
+// Module-scoped (not component state): System Settings should deep-link
+// open automatically only once per app launch, regardless of how many times
+// App re-renders or how many permission-error events arrive afterward.
+let hasAutoOpenedPermissionSettings = false;
 
 interface InputDevice {
   name: string;
@@ -43,6 +65,9 @@ const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [textInput, setTextInput] = useState("");
   const [lastError, setLastError] = useState<string | null>(null);
+  const [permissionErrorKind, setPermissionErrorKind] = useState<PermissionKind | null>(
+    null
+  );
 
   const sourceLanguageRef = useRef(sourceLanguage);
   sourceLanguageRef.current = sourceLanguage;
@@ -92,6 +117,29 @@ const App: React.FC = () => {
     });
     return () => {
       unlistenServerError.then((fn) => fn());
+    };
+  }, []);
+
+  // Permission errors (screen recording / microphone) deep-link to the
+  // relevant System Settings pane: automatically once per app launch, and
+  // on every click of the banner's "설정 열기" button thereafter (design
+  // decisions 1-2 of the permission-error deep-link ticket). This does not
+  // raise its own banner -- `server-error` (above) already does that from
+  // the same Rust catch site; this only remembers which pane to deep-link.
+  useEffect(() => {
+    const unlistenPermissionError = listen<PermissionErrorPayload>(
+      "permission-error",
+      (event) => {
+        const { kind } = event.payload;
+        setPermissionErrorKind(kind);
+        if (!hasAutoOpenedPermissionSettings) {
+          hasAutoOpenedPermissionSettings = true;
+          open(PERMISSION_SETTINGS_URLS[kind]).catch(() => {});
+        }
+      }
+    );
+    return () => {
+      unlistenPermissionError.then((fn) => fn());
     };
   }, []);
 
@@ -226,6 +274,12 @@ const App: React.FC = () => {
     [sendConfigure]
   );
 
+  const handleOpenPermissionSettings = useCallback(() => {
+    if (permissionErrorKind) {
+      open(PERMISSION_SETTINGS_URLS[permissionErrorKind]).catch(() => {});
+    }
+  }, [permissionErrorKind]);
+
   const handleSendText = useCallback(async () => {
     if (!textInput.trim() || isTtsSpeaking) return;
     try {
@@ -294,8 +348,19 @@ const App: React.FC = () => {
       {lastError && (
         <div style={styles.errorBanner} role="alert">
           <span style={styles.errorBannerText}>{lastError}</span>
+          {permissionErrorKind && (
+            <button
+              onClick={handleOpenPermissionSettings}
+              style={styles.errorBannerAction}
+            >
+              설정 열기
+            </button>
+          )}
           <button
-            onClick={() => setLastError(null)}
+            onClick={() => {
+              setLastError(null);
+              setPermissionErrorKind(null);
+            }}
             style={styles.errorBannerClose}
             aria-label="Dismiss error"
           >
@@ -452,6 +517,16 @@ const styles: Record<string, React.CSSProperties> = {
   errorBannerText: {
     flex: 1,
     overflowWrap: "break-word" as const,
+  },
+  errorBannerAction: {
+    flexShrink: 0,
+    padding: "1px 7px",
+    border: "1px solid rgba(254,202,202,0.5)",
+    borderRadius: "3px",
+    backgroundColor: "transparent",
+    color: "#fecaca",
+    fontSize: "11px",
+    cursor: "pointer",
   },
   errorBannerClose: {
     flexShrink: 0,

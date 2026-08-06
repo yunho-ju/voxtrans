@@ -310,6 +310,10 @@ pub async fn start_capture(
     std::thread::spawn(move || {
         if let Err(e) = audio_capture::start_capture(audio_tx, stop_audio_rx, warning_tx) {
             error!("Audio capture error: {}", e);
+            let _ = app_audio.emit(
+                "permission-error",
+                serde_json::json!({ "kind": "screen_capture", "message": e.clone() }),
+            );
             let _ = app_audio.emit("server-error", e);
         }
         *state_audio.is_capturing.lock() = false;
@@ -321,6 +325,10 @@ pub async fn start_capture(
     std::thread::spawn(move || {
         if let Err(e) = mic_capture::start_mic_capture(mic_tx, stop_mic_rx, mic_device_uid) {
             error!("Mic capture error: {}", e);
+            let _ = app_mic.emit(
+                "permission-error",
+                serde_json::json!({ "kind": "microphone", "message": e.clone() }),
+            );
             let _ = app_mic.emit("server-error", e);
         }
     });
