@@ -28,6 +28,14 @@ interface Props {
   inputDevice: string;
   onInputDeviceChange: (uid: string) => void;
   inputDevices: InputDevice[];
+  /** localStorage override only (empty string means "not set") -- App.tsx
+   * combines this with `detectedServerDir` to get the effective path the
+   * "서버 켜기" button uses. */
+  serverDir: string;
+  onServerDirChange: (dir: string) => void;
+  /** Rust `default_server_dir()` result, shown as the field's placeholder
+   * so the user can see what would be used if they leave it blank. */
+  detectedServerDir: string | null;
   speakTargetLanguage: string;
   onSpeakTargetLanguageChange: (lang: string) => void;
   voiceClone: boolean;
@@ -92,6 +100,9 @@ const SettingsDrawer: React.FC<Props> = ({
   inputDevice,
   onInputDeviceChange,
   inputDevices,
+  serverDir,
+  onServerDirChange,
+  detectedServerDir,
   speakTargetLanguage,
   onSpeakTargetLanguageChange,
   voiceClone,
@@ -113,6 +124,18 @@ const SettingsDrawer: React.FC<Props> = ({
           onChange={(e) => onServerUrlChange(e.target.value)}
           style={styles.input}
           placeholder="wss://host/ws"
+        />
+        <input
+          type="text"
+          value={serverDir}
+          onChange={(e) => onServerDirChange(e.target.value)}
+          style={styles.input}
+          placeholder={
+            detectedServerDir
+              ? `자동 탐지됨: ${detectedServerDir}`
+              : "서버 경로 (자동 탐지 실패, 직접 입력)"
+          }
+          aria-label="Server directory"
         />
         <div style={styles.settingRow}>
           <label style={styles.label}>Mode</label>

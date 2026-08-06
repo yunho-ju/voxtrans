@@ -28,6 +28,9 @@ pub fn run() {
             commands::send_speak_text,
             commands::start_capture,
             commands::stop_capture,
+            commands::check_server_health,
+            commands::start_server,
+            commands::default_server_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

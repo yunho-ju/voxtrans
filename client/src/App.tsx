@@ -57,6 +57,15 @@ const App: React.FC = () => {
     () => localStorage.getItem("voxtrans_input_device") || ""
   );
   const [inputDevices, setInputDevices] = useState<InputDevice[]>([]);
+  // Server-launch priority ① localStorage override ② Rust-detected dev
+  // default (../../server from src-tauri, populated below) ③ null, which
+  // Controls.tsx renders as a hint to fill in Settings rather than a
+  // "서버 켜기" button pointed at nothing.
+  const [serverDirOverride, setServerDirOverride] = useState(
+    () => localStorage.getItem("voxtrans_server_dir") || ""
+  );
+  const [detectedServerDir, setDetectedServerDir] = useState<string | null>(null);
+  const serverDir = serverDirOverride || detectedServerDir;
   const [speakTargetLanguage, setSpeakTargetLanguage] = useState("English");
   const [voiceClone, setVoiceClone] = useState(true);
   const [micMode, setMicMode] = useState("auto");
@@ -103,6 +112,14 @@ const App: React.FC = () => {
         setInputDevices(parsed);
       })
       .catch(() => {});
+  }, []);
+
+  // Detect the sibling server/ directory in a dev checkout (only used when
+  // the user hasn't overridden voxtrans_server_dir in Settings).
+  useEffect(() => {
+    invoke<string | null>("default_server_dir")
+      .then(setDetectedServerDir)
+      .catch(() => setDetectedServerDir(null));
   }, []);
 
   // FR-009 / spec.md US3 acceptance scenario 2: a selected device that
@@ -215,6 +232,11 @@ const App: React.FC = () => {
   const handleInputDeviceChange = useCallback((uid: string) => {
     setInputDevice(uid);
     localStorage.setItem("voxtrans_input_device", uid);
+  }, []);
+
+  const handleServerDirChange = useCallback((dir: string) => {
+    setServerDirOverride(dir);
+    localStorage.setItem("voxtrans_server_dir", dir);
   }, []);
 
   const handleSourceLanguageChange = useCallback(
@@ -389,6 +411,9 @@ const App: React.FC = () => {
             inputDevice={inputDevice}
             onInputDeviceChange={handleInputDeviceChange}
             inputDevices={inputDevices}
+            serverDir={serverDirOverride}
+            onServerDirChange={handleServerDirChange}
+            detectedServerDir={detectedServerDir}
             speakTargetLanguage={speakTargetLanguage}
             onSpeakTargetLanguageChange={handleSpeakTargetLanguageChange}
             voiceClone={voiceClone}
@@ -408,6 +433,7 @@ const App: React.FC = () => {
           outputDevices.find((d) => d.uid === outputDevice)?.name ?? ""
         }
         inputDevice={inputDevice}
+        serverDir={serverDir}
         mode={mode}
         onModeChange={handleModeChange}
         micMode={micMode}

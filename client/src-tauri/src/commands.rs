@@ -6,7 +6,11 @@ use crate::ws_client;
 use log::{error, info};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::mpsc;
+use std::io::{Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
+use std::sync::Mutex as StdMutex;
+use std::time::{Duration, Instant};
 
 /// Called when user clicks "녹화 시작".
 /// Generates a timestamped meeting file, writes ~/meeting_current.json,
@@ -380,9 +384,145 @@ pub async fn stop_capture(state: State<'_, SharedState>) -> Result<(), String> {
     Ok(())
 }
 
+/// Pure TCP/HTTP probe for the server's `GET /health`, hand-rolled against
+/// `std::net` (one request, one status line to parse) instead of pulling in
+/// an HTTP client crate for it -- ticket instruction was "신규 크레이트 추가
+/// 금지". Split from the `#[tauri::command]` wrapper below so a test can
+/// point it at a mock `TcpListener` instead of a real server.
+fn check_health_at(host: &str, port: u16) -> bool {
+    let Ok(mut addrs) = format!("{host}:{port}").to_socket_addrs() else {
+        return false;
+    };
+    let Some(addr) = addrs.next() else {
+        return false;
+    };
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    let request = "GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 512];
+    let Ok(n) = stream.read(&mut buf) else {
+        return false;
+    };
+    let response = String::from_utf8_lossy(&buf[..n]);
+    response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")
+}
+
+/// Whether the server on `127.0.0.1:port` is up and answering `/health` --
+/// backs the client's "서버 켜기" flow (disabled button vs. spawn-and-poll).
+/// `async fn` (Critic round 1, minor): Tauri offloads async commands onto
+/// its runtime's blocking-safe pool rather than running the blocking
+/// `TcpStream` I/O inline on the caller's dispatch thread.
+#[tauri::command]
+pub async fn check_server_health(port: u16) -> bool {
+    check_health_at("127.0.0.1", port)
+}
+
+/// Resolves the server's virtualenv Python interpreter path and confirms it
+/// exists, without spawning anything -- separated out of `start_server` so
+/// this validation is unit-testable on its own (ticket: "스폰 자체는 실행하지
+/// 않는 순수 검증 함수로 분리해 테스트").
+fn resolve_server_python(server_dir: &str) -> Result<PathBuf, String> {
+    let python_path = PathBuf::from(server_dir)
+        .join(".venv")
+        .join("bin")
+        .join("python");
+    if !python_path.is_file() {
+        return Err(format!(
+            "Python virtualenv not found at {}. Create it with `python3 -m venv .venv` \
+             and install the server's dependencies inside {server_dir}.",
+            python_path.display()
+        ));
+    }
+    Ok(python_path)
+}
+
+/// How long a spawned server is given the benefit of the doubt before a
+/// second `start_server` call is allowed to spawn again. The server loads
+/// several GB of models inside FastAPI's lifespan before uvicorn binds its
+/// socket at all -- `/health` is unreachable (not just unhealthy) for the
+/// entire loading window, so a client poll timing out is not evidence the
+/// first spawn failed. Critic round 1 [major]: without this guard, a
+/// reclick of "서버 켜기" after the poll timeout spawns a *second*
+/// `python -m src.main` while the first is still loading, and the loser of
+/// the pair fails on bind with EADDRINUSE.
+const SPAWN_GUARD_WINDOW: Duration = Duration::from_secs(180);
+
+/// Last time `start_server` actually spawned a process, `None` before the
+/// first call. Read/written only through `should_spawn`'s call sites in
+/// `start_server` below.
+static LAST_SPAWN: StdMutex<Option<Instant>> = StdMutex::new(None);
+
+/// Pure decision behind the spawn guard: `now` and `last_spawn` are plain
+/// parameters (not read from the static / `Instant::now()` directly) so
+/// this is testable without depending on wall-clock timing ("시각 주입
+/// 가능하게 분리").
+fn should_spawn(last_spawn: Option<Instant>, now: Instant) -> bool {
+    match last_spawn {
+        None => true,
+        Some(last) => now.duration_since(last) >= SPAWN_GUARD_WINDOW,
+    }
+}
+
+/// Spawns `<server_dir>/.venv/bin/python -m src.main` (cwd=server_dir) for
+/// the "서버 켜기" button, guarded by `should_spawn` against double-spawning
+/// while a previous attempt is still (plausibly) loading. Returns
+/// `"spawned"` when it actually launched a process, `"already_starting"`
+/// when the guard held and nothing new was spawned -- the frontend treats
+/// both as success and resumes polling either way.
+///
+/// The returned child handle is intentionally dropped rather than tracked
+/// in app state: the frontend observes whether the spawn "took" by polling
+/// `check_server_health` separately, and tauri-plugin-shell's
+/// `CommandChild` does not kill its process on drop.
+#[tauri::command]
+pub async fn start_server(app: AppHandle, server_dir: String) -> Result<String, String> {
+    let python_path = resolve_server_python(&server_dir)?;
+
+    let now = Instant::now();
+    let mut last_spawn = LAST_SPAWN.lock().map_err(|e| e.to_string())?;
+    if !should_spawn(*last_spawn, now) {
+        return Ok("already_starting".to_string());
+    }
+
+    use tauri_plugin_shell::ShellExt;
+    app.shell()
+        .command(python_path)
+        .args(["-m", "src.main"])
+        .current_dir(PathBuf::from(&server_dir))
+        .spawn()
+        .map_err(|e| format!("Failed to start server: {e}"))?;
+    *last_spawn = Some(now);
+    Ok("spawned".to_string())
+}
+
+/// Best-effort discovery of the server directory for a dev checkout: the
+/// client and server live as siblings (`<repo>/client/src-tauri`,
+/// `<repo>/server`), so two levels up from this crate's compile-time
+/// location is the repo root. Returns `None` (never a guess) when that
+/// layout doesn't hold -- packaged builds, or a differently-laid-out
+/// checkout -- so the frontend falls back to asking the user instead of
+/// spawning something that doesn't exist.
+#[tauri::command]
+pub fn default_server_dir() -> Option<String> {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let candidate = PathBuf::from(manifest_dir).join("../../server");
+    let canonical = candidate.canonicalize().ok()?;
+    if canonical.is_dir() {
+        Some(canonical.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
 
     #[test]
     fn resolve_output_device_selection_threads_both_uid_and_name() {
@@ -399,5 +539,133 @@ mod tests {
         let (uid, name) = resolve_output_device_selection(None, None);
         assert_eq!(uid, "");
         assert_eq!(name, "");
+    }
+
+    // C6: check_health_at (the pure function behind check_server_health)
+    // against mock TCP sockets only -- no real server dependency.
+
+    #[test]
+    fn check_health_at_false_when_nothing_is_listening() {
+        // Bind then immediately drop, so the port was briefly valid but
+        // nothing answers a real connection attempt.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        assert!(!check_health_at("127.0.0.1", port));
+    }
+
+    /// Spins up a one-shot mock HTTP server on an OS-assigned port that
+    /// replies with `response` to the first connection, then returns the
+    /// port so a test can point `check_health_at` at it.
+    fn spawn_mock_http_server(response: &'static str) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 512];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn check_health_at_true_for_200_response() {
+        let port =
+            spawn_mock_http_server("HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n{\"status\":\"ok\"}");
+
+        assert!(check_health_at("127.0.0.1", port));
+    }
+
+    #[test]
+    fn check_health_at_false_for_404_response() {
+        let port = spawn_mock_http_server("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+
+        assert!(!check_health_at("127.0.0.1", port));
+    }
+
+    // C7: resolve_server_python -- the pure validation `start_server` runs
+    // before ever spawning a process.
+
+    #[test]
+    fn resolve_server_python_errs_with_the_missing_path_when_venv_is_absent() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = resolve_server_python(dir.path().to_str().unwrap()).unwrap_err();
+
+        let expected_path = dir.path().join(".venv").join("bin").join("python");
+        assert!(
+            err.contains(&expected_path.to_string_lossy().to_string()),
+            "expected error to mention the missing path {expected_path:?}, got: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_server_python_ok_when_venv_python_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let venv_bin = dir.path().join(".venv").join("bin");
+        std::fs::create_dir_all(&venv_bin).unwrap();
+        let python_path = venv_bin.join("python");
+        std::fs::write(&python_path, "").unwrap();
+
+        let resolved = resolve_server_python(dir.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(resolved, python_path);
+    }
+
+    // default_server_dir: pure filesystem detection of the dev checkout's
+    // sibling `server/` directory from this crate's compile-time location.
+    // Guarded (Critic round 1, "참고" item): an isolated checkout copy of
+    // this crate without the sibling `server/` directory must not fail this
+    // test on ambient repo layout the code under test has no control over
+    // -- skip rather than assert when the directory this test itself
+    // expects to find isn't actually there.
+    #[test]
+    fn default_server_dir_detects_the_sibling_server_directory_when_present() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let expected = PathBuf::from(manifest_dir).join("../../server");
+        if !expected.is_dir() {
+            eprintln!(
+                "skipping default_server_dir_detects_the_sibling_server_directory_when_present: \
+                 no sibling server/ directory in this checkout ({expected:?})"
+            );
+            return;
+        }
+
+        let dir = default_server_dir()
+            .expect("expected to detect ../../server since it exists in this checkout");
+
+        let path = PathBuf::from(dir);
+        assert!(path.is_dir(), "{path:?} should be a directory");
+        assert!(path.ends_with("server"), "{path:?} should end with server");
+    }
+
+    // Critic round 1, [major]: a second start_server call within the guard
+    // window must not spawn a second server process while the first is
+    // still (plausibly) loading models -- should_spawn is the pure
+    // decision behind that guard, with both times passed in as parameters
+    // so tests don't depend on wall-clock timing ("시각 주입 가능하게 분리").
+
+    #[test]
+    fn should_spawn_true_when_nothing_has_been_spawned_yet() {
+        assert!(should_spawn(None, Instant::now()));
+    }
+
+    #[test]
+    fn should_spawn_false_within_the_guard_window_of_a_previous_spawn() {
+        let now = Instant::now();
+        let ten_seconds_ago = now - Duration::from_secs(10);
+
+        assert!(!should_spawn(Some(ten_seconds_ago), now));
+    }
+
+    #[test]
+    fn should_spawn_true_once_the_guard_window_has_fully_elapsed() {
+        let now = Instant::now();
+        let long_ago = now - (SPAWN_GUARD_WINDOW + Duration::from_secs(1));
+
+        assert!(should_spawn(Some(long_ago), now));
     }
 }

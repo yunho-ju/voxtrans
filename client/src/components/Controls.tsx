@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 interface Props {
@@ -16,6 +16,49 @@ interface Props {
   onTextInputChange: (text: string) => void;
   onSendText: () => void;
   isTtsSpeaking: boolean;
+  /** Resolved server directory (localStorage override, then Rust-detected
+   * dev default, else null) -- see App.tsx. Null means neither source
+   * produced a usable path, so the "서버 켜기" flow can't spawn anything
+   * and shows a hint pointing at Settings instead of a button. */
+  serverDir: string | null;
+}
+
+/** Extracts the port from a `ws(s)://host[:port]/path` server URL, matching
+ * the server's actual `/health` listener; falls back to the server's
+ * documented default when the URL has no explicit port. Exported (Critic
+ * round 1 minor: "무테스트") so it has its own direct unit tests instead of
+ * only being exercised indirectly through component behaviour. */
+export function portFromServerUrl(url: string): number {
+  const match = url.match(/:(\d+)(?:\/|$)/);
+  return match ? parseInt(match[1], 10) : 8765;
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+// Critic round 1 [major]: the server loads several GB of models inside
+// FastAPI's lifespan before uvicorn binds `/health` at all, so 30s was not
+// remotely long enough -- a normal, successful startup was routinely
+// mistaken for a failure. 180 x 1s gives loading several minutes to finish
+// before the poll gives up.
+const HEALTH_POLL_MAX_ATTEMPTS = 180;
+const HEALTH_POLL_INTERVAL_MS = 1000;
+// Low-frequency probe used only while the banner is already showing (not
+// during the button's own active poll above) -- Critic round 1 minor
+// ("타임아웃 이후 배너 stale"): if the server comes up on its own after the
+// poll gave up, the banner has to notice and clear itself.
+const STALE_BANNER_REPROBE_INTERVAL_MS = 5000;
+
+/** Polls `check_server_health` once per second (up to
+ * `HEALTH_POLL_MAX_ATTEMPTS` times) until it reports healthy, or gives up. */
+async function pollUntilHealthy(port: number): Promise<boolean> {
+  for (let attempt = 0; attempt < HEALTH_POLL_MAX_ATTEMPTS; attempt++) {
+    await sleep(HEALTH_POLL_INTERVAL_MS);
+    const healthy = await invoke<boolean>("check_server_health", { port }).catch(
+      () => false
+    );
+    if (healthy) return true;
+  }
+  return false;
 }
 
 type ActiveTab = "listen" | "speak" | "type";
@@ -35,6 +78,7 @@ const Controls: React.FC<Props> = ({
   onTextInputChange,
   onSendText,
   isTtsSpeaking,
+  serverDir,
 }) => {
   const isCapturing = status === "connected" || status === "connecting";
 
@@ -44,6 +88,44 @@ const Controls: React.FC<Props> = ({
   const [activeTab, setActiveTab] = useState<ActiveTab>(() =>
     modeToTab(mode)
   );
+
+  // null = not checked yet, so the button/hint stay hidden until the first
+  // check resolves rather than flashing on for a healthy server (C1).
+  const [serverHealthy, setServerHealthy] = useState<boolean | null>(null);
+  const [startingServer, setStartingServer] = useState(false);
+  const [serverError, setServerError] = useState<string | null>(null);
+
+  const checkHealth = useCallback(async () => {
+    const port = portFromServerUrl(serverUrl);
+    const healthy = await invoke<boolean>("check_server_health", { port }).catch(
+      () => false
+    );
+    setServerHealthy(healthy);
+    return healthy;
+  }, [serverUrl]);
+
+  // (b) "마운트/상태 전환 시": re-probes whenever the UI is (or becomes)
+  // disconnected, including the initial mount.
+  useEffect(() => {
+    if (status === "disconnected") {
+      checkHealth();
+    }
+  }, [status, checkHealth]);
+
+  // Critic round 1 minor ("타임아웃 이후 배너 stale"): while the banner is
+  // showing (disconnected + confirmed unhealthy) and no active poll is
+  // already covering it, keep re-probing at a low frequency so a server
+  // that finishes starting up on its own -- no further click needed --
+  // makes the banner disappear by itself instead of staying stale forever.
+  useEffect(() => {
+    if (status !== "disconnected" || serverHealthy !== false || startingServer) {
+      return;
+    }
+    const intervalId = setInterval(() => {
+      checkHealth();
+    }, STALE_BANNER_REPROBE_INTERVAL_MS);
+    return () => clearInterval(intervalId);
+  }, [status, serverHealthy, startingServer, checkHealth]);
 
   const handleToggle = async () => {
     try {
@@ -72,6 +154,52 @@ const Controls: React.FC<Props> = ({
       }
     } catch (e) {
       console.error("Command error:", e);
+      // (a) "Connect 실패 시": a down server is the most common reason
+      // start_capture's set_server_url/start_capture pair fails, so
+      // re-probe immediately rather than waiting for the next
+      // disconnected-status transition (there may not be one).
+      if (!isCapturing) {
+        checkHealth();
+      }
+    }
+  };
+
+  const handleStartServer = async () => {
+    // No `if (!serverDir)` guard here (Critic round 1 "정리"): this handler
+    // is only ever wired to the button rendered in the `serverDir ? ... :
+    // ...` branch below, so `serverDir` is already guaranteed truthy at
+    // every real call site -- a runtime check here was unreachable.
+    setServerError(null);
+    setStartingServer(true);
+    const port = portFromServerUrl(serverUrl);
+    try {
+      // Design decision: "스폰 전 이미 healthy면 no-op 성공" -- covers the
+      // race where the server came up between the last probe and the
+      // click, without ever calling start_server.
+      const alreadyHealthy = await checkHealth();
+      if (!alreadyHealthy) {
+        await invoke("start_server", { serverDir });
+        const becameHealthy = await pollUntilHealthy(port);
+        if (!becameHealthy) {
+          // Critic round 1 [major]: no longer implies a fresh click would
+          // restart anything -- the backend's spawn guard means a retry
+          // just resumes waiting on the same still-loading process.
+          setServerError(
+            "서버가 아직 응답하지 않습니다. 모델 로딩에 수 분 정도 걸릴 수 있습니다 " +
+              "— 잠시 후 다시 시도하면 이어서 대기합니다."
+          );
+          setServerHealthy(false);
+          setStartingServer(false);
+          return;
+        }
+        setServerHealthy(true);
+      }
+      setStartingServer(false);
+      await handleToggle();
+    } catch (e) {
+      setServerError(typeof e === "string" ? e : "서버를 시작하지 못했습니다");
+      setServerHealthy(false);
+      setStartingServer(false);
     }
   };
 
@@ -103,6 +231,38 @@ const Controls: React.FC<Props> = ({
           </button>
         ))}
       </div>
+
+      {/* Server offline banner: shown only once the health probe has come
+          back unhealthy while disconnected (C1: healthy or not-yet-checked
+          renders nothing here). */}
+      {status === "disconnected" && serverHealthy === false && (
+        <div style={styles.serverBanner}>
+          {serverDir ? (
+            <>
+              <button
+                onClick={handleStartServer}
+                disabled={startingServer}
+                style={{
+                  ...styles.serverBtn,
+                  ...(startingServer ? styles.serverBtnDisabled : {}),
+                }}
+                data-testid="start-server-btn"
+              >
+                {startingServer ? "서버 시작 중…" : "서버 켜기"}
+              </button>
+              {serverError && (
+                <div style={styles.serverErrorText} data-testid="server-error">
+                  {serverError}
+                </div>
+              )}
+            </>
+          ) : (
+            <div style={styles.serverHint} data-testid="server-hint">
+              서버 경로를 설정에서 지정하세요
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Action area */}
       <div style={styles.actionArea}>
@@ -286,6 +446,35 @@ const styles: Record<string, React.CSSProperties> = {
     backgroundColor: "rgba(248,113,113,0.15)",
     borderColor: "rgba(248,113,113,0.3)",
     color: "#f87171",
+  },
+  serverBanner: {
+    padding: "8px 12px 0",
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: "4px",
+  },
+  serverBtn: {
+    padding: "7px 12px",
+    border: "1px solid rgba(250,204,21,0.35)",
+    borderRadius: "6px",
+    backgroundColor: "rgba(250,204,21,0.15)",
+    color: "#facc15",
+    fontSize: "12px",
+    cursor: "pointer",
+    fontWeight: 500,
+  },
+  serverBtnDisabled: {
+    opacity: 0.6,
+    cursor: "not-allowed",
+  },
+  serverErrorText: {
+    fontSize: "11px",
+    color: "#f87171",
+  },
+  serverHint: {
+    fontSize: "11px",
+    color: "rgba(255,255,255,0.5)",
+    textAlign: "center" as const,
   },
   pttIndicator: {
     padding: "6px 10px",
