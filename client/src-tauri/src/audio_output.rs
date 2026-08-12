@@ -85,6 +85,30 @@ fn output_start_error_message(device_uid: &str, device_name: &str) -> String {
 /// `playback_complete_tx` (the same outbound text-message channel
 /// `commands.rs`'s other control messages use, so no new send path is
 /// needed on the WebSocket side).
+/// Switches the live output stream to `uid` without ending the session.
+///
+/// Before this existed the device was bound once at `start_tts_playback` and
+/// never re-read, so changing the output in settings mid-session appeared to
+/// work and silently kept playing to the old device -- the failure that cost an
+/// afternoon: the setting said "MacBook 스피커" while TTS was still going to
+/// BlackHole, with nothing in the UI or the logs disagreeing.
+///
+/// A failed switch leaves the stream stopped rather than pretending: the caller
+/// reports it, and the next successful switch (or a stop/start) recovers.
+fn switch_output_device(uid: &str, name: &str) -> Result<(), String> {
+    unsafe { audio_output_stop() };
+    let c_uid = CString::new(uid).map_err(|e| format!("Invalid device UID: {}", e))?;
+    if unsafe { audio_output_start(c_uid.as_ptr()) } {
+        info!(
+            "TTS output switched to: {}",
+            if uid.is_empty() { "default" } else { uid }
+        );
+        Ok(())
+    } else {
+        Err(output_start_error_message(uid, name))
+    }
+}
+
 pub fn start_tts_playback(
     device_uid: String,
     device_name: String,
@@ -92,6 +116,7 @@ pub fn start_tts_playback(
     mut stop_rx: mpsc::Receiver<()>,
     mut tts_end_rx: mpsc::Receiver<i64>,
     playback_complete_tx: mpsc::Sender<String>,
+    mut device_change_rx: mpsc::Receiver<(String, String)>,
 ) -> Result<(), String> {
     let c_uid = CString::new(device_uid.as_str())
         .map_err(|e| format!("Invalid device UID: {}", e))?;
@@ -136,6 +161,19 @@ pub fn start_tts_playback(
                 break;
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
+        }
+
+        // Device switches are applied here, between stop checks and draining,
+        // so a switch never interleaves with a chunk being enqueued. Only the
+        // newest request matters -- older ones in the queue are superseded.
+        let mut pending_device: Option<(String, String)> = None;
+        while let Ok(selection) = device_change_rx.try_recv() {
+            pending_device = Some(selection);
+        }
+        if let Some((uid, name)) = pending_device {
+            if let Err(e) = switch_output_device(&uid, &name) {
+                warn!("TTS output switch failed: {}", e);
+            }
         }
 
         // Read tts_end *before* draining, but hold it rather than applying

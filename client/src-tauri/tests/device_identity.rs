@@ -64,6 +64,8 @@ fn try_start_and_stop(uid: &str, name: &str) -> Result<(), String> {
     let (stop_tx, stop_rx) = mpsc::channel::<()>(1);
     let (_tts_end_tx, tts_end_rx) = mpsc::channel::<i64>(1);
     let (playback_complete_tx, _playback_complete_rx) = mpsc::channel::<String>(1);
+    // No device switches in this test; the receiver only has to stay alive.
+    let (_device_change_tx, device_change_rx) = mpsc::channel::<(String, String)>(1);
     let (done_tx, done_rx) = std_mpsc::channel::<Result<(), String>>();
 
     let uid_owned = uid.to_string();
@@ -76,6 +78,7 @@ fn try_start_and_stop(uid: &str, name: &str) -> Result<(), String> {
             stop_rx,
             tts_end_rx,
             playback_complete_tx,
+            device_change_rx,
         );
         let _ = done_tx.send(result);
     });

@@ -23,6 +23,10 @@ pub struct AppState {
     pub tts_audio_tx: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
     /// Channel to send stop signal to TTS output thread
     pub stop_tts_tx: Mutex<Option<mpsc::Sender<()>>>,
+    /// Channel carrying `(uid, name)` output-device switches to the running
+    /// TTS playback thread. Without it the device is fixed for the session and
+    /// changing it in settings does nothing until stop/start.
+    pub output_device_tx: Mutex<Option<mpsc::Sender<(String, String)>>>,
 }
 
 impl AppState {
@@ -36,6 +40,7 @@ impl AppState {
             stop_mic_tx: Mutex::new(None),
             tts_audio_tx: Mutex::new(None),
             stop_tts_tx: Mutex::new(None),
+            output_device_tx: Mutex::new(None),
         }
     }
 }
