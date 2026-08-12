@@ -65,6 +65,11 @@ class ClientSession:
         self.voice_clone = True  # use voice cloning (ref_audio) or preset voice
         self.mic_mode = "auto"  # "auto" (VAD) or "push_to_talk"
         self.mic_active = False  # for push-to-talk: True while key held
+        self.translation_prompt = ""  # "" = TRANSLATION_PROMPT_DEFAULT
+        # Push-to-talk hold buffer: raw chunks accumulated while the key is
+        # held, committed as one utterance on release. Never fed to mic_vad --
+        # the hold defines the segment boundary, not silence.
+        self.mic_hold_chunks: list[np.ndarray] = []
 
     def next_segment_id(self) -> int:
         self._segment_counter += 1
@@ -79,6 +84,7 @@ class ClientSession:
         speak_target_language: str = "",
         voice_clone: bool = True,
         mic_mode: str = "",
+        translation_prompt: str = "",
     ) -> None:
         self.language = language
         self.target_language = target_language
@@ -91,6 +97,9 @@ class ClientSession:
         self.voice_clone = voice_clone
         if mic_mode:
             self.mic_mode = mic_mode
+        # Empty means "use the server default" -- assigned unconditionally so
+        # clearing the field in settings restores the default mid-session.
+        self.translation_prompt = translation_prompt
         logger.info(
             "Session %s: language=%s, target=%s, mode=%s, voice=%s, speak_target=%s, clone=%s, mic=%s",
             self.session_id, language, target_language,
@@ -103,6 +112,7 @@ class ClientSession:
         self.vad.reset()
         self.mic_buffer.clear()
         self.mic_vad.reset()
+        self.mic_hold_chunks = []
 
     def close(self) -> None:
         """Full cleanup: release buffers, VAD models, and references."""

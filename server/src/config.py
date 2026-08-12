@@ -87,6 +87,16 @@ VAD_INTERMEDIATE_SILENCE_WINDOWS = VAD_INTERMEDIATE_SILENCE_MS // VAD_WINDOW_DUR
 MIC_VAD_SILENCE_DURATION_MS = 550
 MIC_VAD_SILENCE_WINDOWS = MIC_VAD_SILENCE_DURATION_MS // VAD_WINDOW_DURATION_MS  # 17 windows at 550ms / 32ms
 
+# Push-to-talk: the hold *is* the utterance. While the key is held nothing is
+# segmented, transcribed, or spoken — the whole hold is buffered and committed
+# on release. This is the contract every other PTT translator implements, and
+# the reason it matters here is `_handle_mic_audio`'s `tts_playing` gate: with
+# mid-hold splitting, TTS for the first half started while the user was still
+# talking, and every mic frame after that was *discarded* (not queued), so the
+# tail of a paused sentence vanished. Auto (VAD) mode is unchanged.
+PTT_MIN_HOLD_S = 0.3   # shorter holds are key-bounce, not speech — dropped
+PTT_MAX_HOLD_S = 60    # safety cap for a stuck/forgotten key; commits early
+
 # Binary WebSocket prefixes
 AUDIO_PREFIX_SYSTEM = 0x01
 AUDIO_PREFIX_MIC = 0x02

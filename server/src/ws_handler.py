@@ -11,7 +11,16 @@ import numpy as np
 from fastapi import WebSocket, WebSocketDisconnect
 
 from .asr import asr_engine
-from .config import AUDIO_PREFIX_MIC, AUDIO_PREFIX_SYSTEM, AUDIO_PREFIX_TTS, MAX_SESSIONS, TTS_SAMPLE_RATE
+from .config import (
+    AUDIO_PREFIX_MIC,
+    AUDIO_PREFIX_SYSTEM,
+    AUDIO_PREFIX_TTS,
+    MAX_SESSIONS,
+    PTT_MAX_HOLD_S,
+    PTT_MIN_HOLD_S,
+    SAMPLE_RATE,
+    TTS_SAMPLE_RATE,
+)
 from .protocol import (
     ConfigureMessage,
     make_error,
@@ -310,7 +319,10 @@ async def _handle_listen_audio(
                                        session.session_id, pending)
                     else:
                         task = asyncio.create_task(
-                            _translate_and_send(websocket, ws_lock, text, session.target_language, segment_id)
+                            _translate_and_send(
+                                websocket, ws_lock, text, session.target_language,
+                                segment_id, session.translation_prompt,
+                            )
                         )
                         background_tasks.add(task)
                         task.add_done_callback(background_tasks.discard)
@@ -328,8 +340,22 @@ async def _handle_speak_audio(
     if session.tts_playing:
         return
 
-    # Push-to-talk: discard audio when mic is not active
-    if session.mic_mode == "push_to_talk" and not session.mic_active:
+    if session.mic_mode == "push_to_talk":
+        # Push-to-talk: discard audio when mic is not active
+        if not session.mic_active:
+            return
+        # The hold is the utterance (config.PTT_MIN_HOLD_S): buffer it whole,
+        # run no VAD, emit nothing. Release commits it in
+        # `_flush_mic_and_process`. Splitting here is what used to start TTS
+        # mid-hold and silently drop everything the user said afterwards.
+        session.mic_hold_chunks.extend(session.mic_buffer.add(data))
+        held_s = _hold_duration_s(session)
+        if held_s >= PTT_MAX_HOLD_S:
+            logger.warning(
+                "Session %s: push-to-talk hold reached %.0fs cap, committing early",
+                session.session_id, held_s,
+            )
+            await _flush_mic_and_process(websocket, session, ws_lock, background_tasks)
         return
 
     chunks = session.mic_buffer.add(data)
@@ -341,15 +367,52 @@ async def _handle_speak_audio(
             )
 
 
+def _hold_duration_s(session: ClientSession) -> float:
+    """Seconds of audio currently buffered for the in-progress PTT hold."""
+    return sum(c.shape[0] for c in session.mic_hold_chunks) / SAMPLE_RATE
+
+
+def _commit_hold(session: ClientSession) -> np.ndarray | None:
+    """Take the whole push-to-talk hold as one utterance and clear the buffer.
+
+    Returns None for holds too short to be speech (`PTT_MIN_HOLD_S`) -- a key
+    bounce or an accidental tap, which must not reach ASR.
+    """
+    chunks = session.mic_hold_chunks
+    session.mic_hold_chunks = []
+    if not chunks:
+        return None
+    held_s = sum(c.shape[0] for c in chunks) / SAMPLE_RATE
+    if held_s < PTT_MIN_HOLD_S:
+        logger.debug(
+            "Session %s: push-to-talk hold %.2fs below %.2fs floor, dropped",
+            session.session_id, held_s, PTT_MIN_HOLD_S,
+        )
+        return None
+    logger.debug(
+        "Session %s: push-to-talk hold committed (%.2fs)", session.session_id, held_s
+    )
+    return np.concatenate(chunks)
+
+
 async def _flush_mic_and_process(
     websocket: WebSocket,
     session: ClientSession,
     ws_lock: asyncio.Lock,
     background_tasks: set[asyncio.Task],
 ) -> None:
-    """Flush the mic VAD buffer (push-to-talk release) and process any speech."""
+    """Flush the mic buffer (push-to-talk release) and process any speech."""
     if session.tts_playing:
         session.mic_vad.reset()
+        session.mic_buffer.clear()
+        session.mic_hold_chunks = []
+        return
+    if session.mic_mode == "push_to_talk":
+        segment = _commit_hold(session)
+        if segment is not None:
+            await _process_speak_segment(
+                websocket, session, segment, ws_lock, background_tasks
+            )
         session.mic_buffer.clear()
         return
     segment = session.mic_vad.flush()
@@ -430,12 +493,14 @@ async def _translate_and_send(
     text: str,
     target_language: str,
     segment_id: int,
+    prompt_template: str = "",
 ) -> None:
     try:
         async with _mlx_semaphore:
             loop = asyncio.get_event_loop()
             translated = await loop.run_in_executor(
                 _executor, translation_engine.translate, text, target_language,
+                prompt_template,
             )
         if translated:
             async with ws_lock:
@@ -527,6 +592,7 @@ Every path that never arms the watcher -- empty translation, `start_synthesis`
         async with _mlx_semaphore:
             translated = await loop.run_in_executor(
                 _executor, translation_engine.translate, text, target_language,
+                session.translation_prompt,
             )
         if not translated:
             return
@@ -680,6 +746,7 @@ async def _handle_control(
             speak_target_language=config.speak_target_language,
             voice_clone=config.voice_clone,
             mic_mode=config.mic_mode,
+            translation_prompt=config.translation_prompt,
         )
         async with ws_lock:
             await websocket.send_text(
