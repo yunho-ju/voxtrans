@@ -11,7 +11,7 @@
 // harness, was the right amount of infrastructure for exactly two frontend
 // wiring facts.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "./App";
 
 // Ticket: permission-error -> system settings deep-link banner. `open` is
@@ -46,6 +46,8 @@ let listenCallbacks: Record<string, ListenCallback[]>;
 const invokeMock = vi.fn(async (cmd: string, _args?: Record<string, unknown>) => {
   if (cmd === "list_output_devices") return OUTPUT_DEVICES;
   if (cmd === "list_devices") return INPUT_DEVICES;
+  // Default: everything granted, so existing tests exercise the normal path.
+  if (cmd === "request_permissions") return { screen: true, microphone: true };
   return undefined;
 });
 
@@ -440,5 +442,77 @@ describe("the meeting preset routes output to BlackHole and mic to a real input"
       "설치"
     );
     expect(window.localStorage.getItem("voxtrans_output_device")).toBeNull();
+  });
+});
+
+describe("startup permission check", () => {
+  // The reason this runs before anything needs the permission: a missing
+  // Screen Recording grant used to surface only as start bouncing back to
+  // stop, with the real cause invisible in the UI.
+  function mockPermissions(status: { screen: boolean; microphone: boolean }) {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_output_devices") return OUTPUT_DEVICES;
+      if (cmd === "list_devices") return INPUT_DEVICES;
+      if (cmd === "request_permissions") return status;
+      return undefined;
+    });
+  }
+
+  it("asks for permissions on launch", async () => {
+    mockPermissions({ screen: true, microphone: true });
+    render(<App />);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("request_permissions", undefined)
+    );
+  });
+
+  it("says nothing when every permission is granted", async () => {
+    mockPermissions({ screen: true, microphone: true });
+    render(<App />);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("request_permissions", undefined)
+    );
+    expect(screen.queryByText(/권한이 없어/)).toBeNull();
+  });
+
+  it("names the missing permission and offers the settings pane", async () => {
+    mockPermissions({ screen: false, microphone: true });
+    render(<App />);
+
+    const banner = await screen.findByText(/화면 및 시스템 오디오 기록 권한이 없어/);
+    expect(banner.textContent).toContain("다시 시작");
+
+    fireEvent.click(screen.getByRole("button", { name: "설정 열기" }));
+    expect(invokeMock).toHaveBeenCalledWith("open_permission_settings", {
+      kind: "screen",
+    });
+  });
+
+  it("routes a missing microphone grant to the microphone pane", async () => {
+    mockPermissions({ screen: true, microphone: false });
+    render(<App />);
+
+    await screen.findByText(/마이크 권한이 없어/);
+    fireEvent.click(screen.getByRole("button", { name: "설정 열기" }));
+    expect(invokeMock).toHaveBeenCalledWith("open_permission_settings", {
+      kind: "microphone",
+    });
+  });
+
+  it("stays usable when the permission check itself fails", async () => {
+    // A broken check must not gate the app -- the capture-start error path
+    // still reports the real failure.
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_output_devices") return OUTPUT_DEVICES;
+      if (cmd === "list_devices") return INPUT_DEVICES;
+      if (cmd === "request_permissions") throw new Error("ffi exploded");
+      return undefined;
+    });
+
+    render(<App />);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("request_permissions", undefined)
+    );
+    expect(screen.queryByText(/권한이 없어/)).toBeNull();
   });
 });

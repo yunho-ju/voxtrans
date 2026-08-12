@@ -2,6 +2,8 @@ import Foundation
 import CoreAudio
 import AVFoundation
 import AudioToolbox
+import AppKit
+import CoreGraphics
 
 // C callback type: (data_ptr, num_samples, sample_rate, channels)
 typealias AudioCallback = @convention(c) (UnsafePointer<Float>, Int, Int, Int) -> Void
@@ -415,6 +417,76 @@ private func buildSckCaptureGraph() -> Bool {
         tearDownSckGraph()
         return false
     }
+}
+
+// MARK: - Permissions
+//
+// Screen Recording ("Screen & System Audio Recording" in System Settings) is
+// what the Core Audio process tap needs, and a denial is invisible from the
+// capture side: `buildSckCaptureGraph` simply fails and the session ends, which
+// the UI shows as start bouncing straight back to stop. Checking up front turns
+// that into a dialog the user can act on.
+//
+// Note that a *rebuilt* app bundle can invalidate an existing grant even though
+// the entry still appears (and looks enabled) in System Settings -- the TCC row
+// is bound to the old signature. Preflight reports the effective answer, not
+// what the settings pane draws, so it catches that case too.
+
+/// 0 = denied/undetermined, 1 = granted.
+@_cdecl("perm_check_screen_capture")
+func permCheckScreenCapture() -> Bool {
+    return CGPreflightScreenCaptureAccess()
+}
+
+/// Shows the system dialog if the app has never asked. Returns the state
+/// *after* asking. macOS only prompts once per app signature; once denied, the
+/// user has to change it in System Settings, which is what `perm_open_settings`
+/// is for.
+@_cdecl("perm_request_screen_capture")
+func permRequestScreenCapture() -> Bool {
+    if CGPreflightScreenCaptureAccess() {
+        return true
+    }
+    return CGRequestScreenCaptureAccess()
+}
+
+@_cdecl("perm_check_microphone")
+func permCheckMicrophone() -> Bool {
+    return AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+}
+
+/// Asks for microphone access, blocking until the user answers. Called off the
+/// UI thread from Rust; the semaphore is why this must never run on main.
+@_cdecl("perm_request_microphone")
+func permRequestMicrophone() -> Bool {
+    let status = AVCaptureDevice.authorizationStatus(for: .audio)
+    if status == .authorized {
+        return true
+    }
+    if status != .notDetermined {
+        return false  // denied/restricted: only System Settings can change it
+    }
+    var granted = false
+    let semaphore = DispatchSemaphore(value: 0)
+    AVCaptureDevice.requestAccess(for: .audio) { allowed in
+        granted = allowed
+        semaphore.signal()
+    }
+    semaphore.wait()
+    return granted
+}
+
+/// Opens the relevant System Settings pane. `kind` is "screen" or "microphone".
+@_cdecl("perm_open_settings")
+func permOpenSettings(kind: UnsafePointer<CChar>) {
+    let which = String(cString: kind)
+    let anchor = which == "microphone"
+        ? "Privacy_Microphone"
+        : "Privacy_ScreenCapture"
+    guard let url = URL(
+        string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)"
+    ) else { return }
+    NSWorkspace.shared.open(url)
 }
 
 @_cdecl("sck_start_capture")

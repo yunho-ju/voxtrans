@@ -21,6 +21,7 @@ bytemuck = { version = "1", features = ["derive"] }
 # crate has not compiled from this repository state — chrono was only in
 # Cargo.lock, pulled in transitively by serde_with.
 chrono = "0.4"
+tauri-plugin-single-instance = "2.4.3"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
