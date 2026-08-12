@@ -28,6 +28,7 @@ class ConfigureMessage:
     speak_target_language: str = ""
     voice_clone: bool = True
     mic_mode: str = "auto"  # "auto" (VAD) or "push_to_talk"
+    translation_prompt: str = ""  # "" = server default template
 
     @classmethod
     def from_dict(cls, data: dict) -> "ConfigureMessage":
@@ -39,6 +40,7 @@ class ConfigureMessage:
             speak_target_language=data.get("speak_target_language", ""),
             voice_clone=data.get("voice_clone", True),
             mic_mode=data.get("mic_mode", "auto"),
+            translation_prompt=data.get("translation_prompt", ""),
         )
 
 

@@ -129,6 +129,7 @@ pub async fn send_configure(
     speak_target_language: Option<String>,
     voice_clone: Option<bool>,
     mic_mode: Option<String>,
+    translation_prompt: Option<String>,
 ) -> Result<(), String> {
     let tx = state.ws_text_tx.lock().clone();
     if let Some(tx) = tx {
@@ -151,6 +152,12 @@ pub async fn send_configure(
         }
         if let Some(mm) = mic_mode {
             json["mic_mode"] = serde_json::Value::String(mm);
+        }
+        // Always sent, empty included: an empty prompt is how the user clears
+        // a custom template back to the server default, so omitting it here
+        // would make the field one-way (settable but never resettable).
+        if let Some(tp) = translation_prompt {
+            json["translation_prompt"] = serde_json::Value::String(tp);
         }
         tx.send(json.to_string())
             .await
@@ -220,6 +227,30 @@ fn resolve_output_device_selection(
     )
 }
 
+/// Retargets TTS playback while a session is running.
+///
+/// Returns `Ok(false)` when nothing is capturing -- the selection is then just
+/// a stored preference that the next `start_capture` picks up, which is not an
+/// error worth surfacing to the user.
+#[tauri::command]
+pub async fn set_output_device(
+    state: State<'_, SharedState>,
+    output_device_uid: Option<String>,
+    output_device_name: Option<String>,
+) -> Result<bool, String> {
+    let selection = resolve_output_device_selection(output_device_uid, output_device_name);
+    let tx = state.output_device_tx.lock().clone();
+    match tx {
+        Some(tx) => {
+            tx.send(selection)
+                .await
+                .map_err(|e| format!("Failed to switch output device: {}", e))?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
 #[tauri::command]
 pub async fn start_capture(
     app: AppHandle,
@@ -252,6 +283,8 @@ pub async fn start_capture(
     // `playback_complete` on -- a clone of the same sender other control
     // messages already use (`send_configure` etc.), not a second send path.
     let (tts_end_tx, tts_end_rx) = mpsc::channel::<i64>(8);
+    // Output-device switches applied to the live playback thread (`set_output_device`).
+    let (output_device_tx, output_device_rx) = mpsc::channel::<(String, String)>(4);
 
     // Store senders
     *state.stop_tx.lock() = Some(stop_audio_tx);
@@ -259,6 +292,7 @@ pub async fn start_capture(
     *state.stop_mic_tx.lock() = Some(stop_mic_tx);
     *state.tts_audio_tx.lock() = Some(tts_tx.clone());
     *state.stop_tts_tx.lock() = Some(stop_tts_tx);
+    *state.output_device_tx.lock() = Some(output_device_tx);
     *state.is_capturing.lock() = true;
     *state.status.lock() = ConnectionStatus::Connecting;
     let _ = app.emit("connection-status", "connecting");
@@ -357,6 +391,7 @@ pub async fn start_capture(
             stop_tts_rx,
             tts_end_rx,
             text_tx,
+            output_device_rx,
         ) {
             error!("TTS playback error: {}", e);
             let _ = app_tts.emit("server-error", e);
@@ -388,6 +423,9 @@ pub async fn stop_capture(app: AppHandle, state: State<'_, SharedState>) -> Resu
     *state.status.lock() = ConnectionStatus::Disconnected;
     *state.ws_text_tx.lock() = None;
     *state.tts_audio_tx.lock() = None;
+    // Cleared with the rest: a stale sender would make `set_output_device`
+    // report success against a playback thread that has already exited.
+    *state.output_device_tx.lock() = None;
     // Idempotent UI reset: even when nothing was running (e.g. Stop pressed
     // while stuck after a refused connect), the frontend must hear
     // "disconnected" or its capturing flag never clears.

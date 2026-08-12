@@ -62,6 +62,17 @@ ASR_MODEL = (os.environ.get("VOXTRANS_ASR_MODEL") or "").strip() or _ASR_MODEL_D
 _TRANSLATION_MODEL_DEFAULT = "mlx-community/Qwen3.5-4B-MLX-4bit"
 TRANSLATION_MODEL = (os.environ.get("VOXTRANS_TRANSLATION_MODEL") or "").strip() or _TRANSLATION_MODEL_DEFAULT
 
+# Translation prompt template, overridable per session from the app's settings.
+# `{lang}` is the target language name; `{text}` is the transcript. A template
+# without `{text}` would silently translate nothing, so `TranslationEngine`
+# rejects it and falls back to this default rather than emitting empty output.
+TRANSLATION_PROMPT_DEFAULT = (
+    "Translate to {lang} in a natural, conversational tone. "
+    "Do not include emojis or special symbols. "
+    "Reply with ONLY the translation.\n\n{text}"
+)
+TRANSLATION_PROMPT_MAX_LENGTH = 2000
+
 # TTS
 TTS_MODEL = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit"
 TTS_SAMPLE_RATE = 24000

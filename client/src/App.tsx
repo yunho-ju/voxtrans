@@ -30,6 +30,11 @@ const PERMISSION_SETTINGS_URLS: Record<PermissionKind, string> = {
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
 };
 
+const PERMISSION_LABELS: Record<PermissionKind, string> = {
+  screen_capture: "화면 및 시스템 오디오 기록",
+  microphone: "마이크",
+};
+
 // Module-scoped (not component state): System Settings should deep-link
 // open automatically only once per app launch, regardless of how many times
 // App re-renders or how many permission-error events arrive afterward.
@@ -82,6 +87,11 @@ const App: React.FC = () => {
   const [speakTargetLanguage, setSpeakTargetLanguage] = useState("English");
   const [voiceClone, setVoiceClone] = useState(true);
   const [micMode, setMicMode] = useState("auto");
+  // Empty = server default template. Persisted so a tuned prompt survives a
+  // restart, which is the whole point of making it editable.
+  const [translationPrompt, setTranslationPrompt] = useState(
+    () => localStorage.getItem("voxtrans_translation_prompt") || ""
+  );
   const [micActive, setMicActive] = useState(false);
   const [opacity, setOpacity] = useState(0.4);
   const [showSettings, setShowSettings] = useState(false);
@@ -90,6 +100,13 @@ const App: React.FC = () => {
   const [permissionErrorKind, setPermissionErrorKind] = useState<PermissionKind | null>(
     null
   );
+  // Startup permission check (null until it has run once). Distinct from
+  // `permissionErrorKind`, which is the reactive path: this one asks *before*
+  // the user presses start, so a missing grant is a dialog rather than a
+  // session that ends the instant it begins.
+  const [missingPermissions, setMissingPermissions] = useState<
+    PermissionKind[] | null
+  >(null);
 
   const sourceLanguageRef = useRef(sourceLanguage);
   sourceLanguageRef.current = sourceLanguage;
@@ -105,6 +122,8 @@ const App: React.FC = () => {
   voiceCloneRef.current = voiceClone;
   const micModeRef = useRef(micMode);
   micModeRef.current = micMode;
+  const translationPromptRef = useRef(translationPrompt);
+  translationPromptRef.current = translationPrompt;
 
   // Load output devices on mount
   useEffect(() => {
@@ -173,6 +192,30 @@ const App: React.FC = () => {
     };
   }, []);
 
+  // Ask for capture permissions on launch, before anything needs them.
+  // `request_permissions` shows the system dialogs for whatever is still
+  // undetermined and returns the state afterwards; anything still missing is
+  // a denial only System Settings can undo, so it becomes a banner.
+  useEffect(() => {
+    let cancelled = false;
+    invoke<{ screen: boolean; microphone: boolean }>("request_permissions")
+      .then((status) => {
+        if (cancelled) return;
+        const missing: PermissionKind[] = [];
+        if (!status.screen) missing.push("screen_capture");
+        if (!status.microphone) missing.push("microphone");
+        setMissingPermissions(missing);
+      })
+      .catch(() => {
+        // A failed check must not block the app: the reactive
+        // `permission-error` path still catches it at capture-start time.
+        if (!cancelled) setMissingPermissions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Send configure automatically when connected
   useEffect(() => {
     if (connectionStatus === "connected") {
@@ -184,6 +227,7 @@ const App: React.FC = () => {
         speakTargetLanguage: speakTargetLanguageRef.current,
         voiceClone: voiceCloneRef.current,
         micMode: micModeRef.current,
+        translationPrompt: translationPromptRef.current,
       }).catch(() => {});
     }
   }, [connectionStatus]);
@@ -200,6 +244,8 @@ const App: React.FC = () => {
             overrides.speakTargetLanguage ?? speakTargetLanguageRef.current,
           voiceClone: overrides.voiceClone ?? voiceCloneRef.current,
           micMode: overrides.micMode ?? micModeRef.current,
+          translationPrompt:
+            overrides.translationPrompt ?? translationPromptRef.current,
         });
       } catch {
         // Not connected yet
@@ -242,15 +288,35 @@ const App: React.FC = () => {
     localStorage.setItem("voxtrans_server_url", url);
   }, []);
 
+  const handleTranslationPromptChange = useCallback(
+    (prompt: string) => {
+      setTranslationPrompt(prompt);
+      localStorage.setItem("voxtrans_translation_prompt", prompt);
+      // Applies to the next segment; no stop/start needed.
+      sendConfigure({ translationPrompt: prompt });
+    },
+    [sendConfigure]
+  );
+
   const handleInputDeviceChange = useCallback((uid: string) => {
     setInputDevice(uid);
     localStorage.setItem("voxtrans_input_device", uid);
   }, []);
 
-  const handleOutputDeviceChange = useCallback((uid: string) => {
-    setOutputDevice(uid);
-    localStorage.setItem("voxtrans_output_device", uid);
-  }, []);
+  const handleOutputDeviceChange = useCallback(
+    (uid: string) => {
+      setOutputDevice(uid);
+      localStorage.setItem("voxtrans_output_device", uid);
+      // Retarget the running playback thread too. Without this the change only
+      // took effect on the next stop/start, while the UI showed the new device
+      // as if it were already live.
+      invoke("set_output_device", {
+        outputDeviceUid: uid,
+        outputDeviceName: outputDevices.find((d) => d.uid === uid)?.name ?? "",
+      }).catch(() => {});
+    },
+    [outputDevices]
+  );
 
   /** One-click meeting routing (2026-08-06 user request): TTS output →
    * BlackHole 2ch, capture mic → a real (non-virtual) input. The remaining
@@ -402,6 +468,37 @@ const App: React.FC = () => {
           </div>
         </div>
       </div>
+      {missingPermissions !== null && missingPermissions.length > 0 && (
+        <div style={styles.errorBanner} role="alert">
+          <span style={styles.errorBannerText}>
+            {PERMISSION_LABELS[missingPermissions[0]]} 권한이 없어
+            {missingPermissions[0] === "screen_capture"
+              ? " 회의 소리를 못 듣습니다."
+              : " 말하기를 쓸 수 없습니다."}
+            {" 허용 후 앱을 다시 시작하세요."}
+          </span>
+          <button
+            onClick={() => {
+              invoke("open_permission_settings", {
+                kind:
+                  missingPermissions[0] === "screen_capture"
+                    ? "screen"
+                    : "microphone",
+              }).catch(() => {});
+            }}
+            style={styles.errorBannerAction}
+          >
+            설정 열기
+          </button>
+          <button
+            onClick={() => setMissingPermissions([])}
+            style={styles.errorBannerClose}
+            aria-label="Dismiss permission warning"
+          >
+            ✕
+          </button>
+        </div>
+      )}
       {lastError && (
         <div style={styles.errorBanner} role="alert">
           <span style={styles.errorBannerText}>{lastError}</span>
@@ -454,6 +551,8 @@ const App: React.FC = () => {
             onSpeakTargetLanguageChange={handleSpeakTargetLanguageChange}
             voiceClone={voiceClone}
             onVoiceCloneChange={handleVoiceCloneChange}
+            translationPrompt={translationPrompt}
+            onTranslationPromptChange={handleTranslationPromptChange}
             micMode={micMode}
             onMicModeChange={handleMicModeChange}
             micActive={micActive}

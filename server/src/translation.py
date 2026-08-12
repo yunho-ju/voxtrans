@@ -1,7 +1,11 @@
 import logging
 import threading
 
-from .config import TRANSLATION_MODEL
+from .config import (
+    TRANSLATION_MODEL,
+    TRANSLATION_PROMPT_DEFAULT,
+    TRANSLATION_PROMPT_MAX_LENGTH,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +33,39 @@ class TranslationEngine:
 
     MAX_INPUT_LENGTH = 2000
 
-    def translate(self, text: str, target_language: str) -> str:
-        """Translate text to target_language. Returns translated text."""
+    @staticmethod
+    def render_prompt(template: str, lang_display: str, text: str) -> str:
+        """Fill a prompt template, falling back to the default if it is unusable.
+
+        A user-authored template reaches here from the app's settings, so every
+        failure mode is a typo, not a bug: a missing `{text}` placeholder would
+        translate an empty string, and an unknown placeholder or a stray brace
+        raises from `str.format`. Both fall back to the default template -- a
+        broken prompt must not silently produce empty or garbage translations.
+        """
+        candidate = (template or "").strip()
+        if not candidate or "{text}" not in candidate:
+            if candidate:
+                logger.warning("Translation prompt lacks {text}; using default")
+            candidate = TRANSLATION_PROMPT_DEFAULT
+        if len(candidate) > TRANSLATION_PROMPT_MAX_LENGTH:
+            logger.warning(
+                "Translation prompt is %d chars (max %d); using default",
+                len(candidate), TRANSLATION_PROMPT_MAX_LENGTH,
+            )
+            candidate = TRANSLATION_PROMPT_DEFAULT
+        try:
+            return candidate.format(lang=lang_display, text=text)
+        except (KeyError, IndexError, ValueError):
+            logger.warning("Translation prompt has a bad placeholder; using default")
+            return TRANSLATION_PROMPT_DEFAULT.format(lang=lang_display, text=text)
+
+    def translate(self, text: str, target_language: str, prompt_template: str = "") -> str:
+        """Translate text to target_language. Returns translated text.
+
+        `prompt_template` comes from the session's settings; empty means the
+        built-in default (`TRANSLATION_PROMPT_DEFAULT`).
+        """
         if self._model is None:
             raise RuntimeError("Translation model not loaded")
         if not text.strip():
@@ -47,7 +82,7 @@ class TranslationEngine:
             lang = "english"
         lang_display = lang.capitalize()
 
-        prompt = f"Translate to {lang_display} in a natural, conversational tone. Do not include emojis or special symbols. Reply with ONLY the translation.\n\n{text}"
+        prompt = self.render_prompt(prompt_template, lang_display, text)
         logger.info("Translation: target='%s' input='%s'", lang_display, text[:80])
         messages = [{"role": "user", "content": prompt}]
         chat_prompt = self._tokenizer.apply_chat_template(

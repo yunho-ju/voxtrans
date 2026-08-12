@@ -49,6 +49,10 @@ interface Props {
   micMode: string;
   onMicModeChange: (mode: string) => void;
   micActive: boolean;
+  /** Prompt template sent to the translation model. Empty means the server's
+   * built-in default; `{lang}` and `{text}` are filled in per segment. */
+  translationPrompt: string;
+  onTranslationPromptChange: (prompt: string) => void;
 }
 
 const SOURCE_LANGUAGE_OPTIONS = [
@@ -75,6 +79,14 @@ const VOICE_OPTIONS = [
   { value: "Vivian", label: "Vivian (ZH)" },
   { value: "Serena", label: "Serena (ZH)" },
 ];
+
+/** Mirrors the server's `TRANSLATION_PROMPT_DEFAULT`, shown as placeholder
+ * text so the user can see what they are replacing before they type. It is
+ * only a hint: leaving the field empty makes the server use its own copy. */
+const DEFAULT_PROMPT_HINT =
+  "Translate to {lang} in a natural, conversational tone. " +
+  "Do not include emojis or special symbols. " +
+  "Reply with ONLY the translation.\n\n{text}";
 
 const MIC_MODE_OPTIONS = [
   { value: "auto", label: "Auto (VAD)" },
@@ -110,6 +122,8 @@ const SettingsDrawer: React.FC<Props> = ({
   micMode,
   onMicModeChange,
   micActive,
+  translationPrompt,
+  onTranslationPromptChange,
 }) => {
   const [presetResult, setPresetResult] = useState<string | null>(null);
   return (
@@ -320,6 +334,20 @@ const SettingsDrawer: React.FC<Props> = ({
                 {micActive ? "Recording..." : "Hold Space to talk"}
               </div>
             )}
+            <div style={styles.settingRow}>
+              <label style={styles.label}>Prompt</label>
+              <textarea
+                value={translationPrompt}
+                onChange={(e) => onTranslationPromptChange(e.target.value)}
+                placeholder={DEFAULT_PROMPT_HINT}
+                rows={4}
+                style={styles.textarea}
+              />
+            </div>
+            <div style={styles.hint}>
+              {"{lang}"} = 목표 언어, {"{text}"} = 인식된 문장. 비워 두면 기본
+              프롬프트를 씁니다. 다음 문장부터 바로 적용됩니다.
+            </div>
           </>
         )}
       </div>
@@ -394,6 +422,26 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "12px",
     outline: "none",
     boxSizing: "border-box",
+  },
+  textarea: {
+    flex: 1,
+    padding: "5px 8px",
+    border: "1px solid rgba(255,255,255,0.12)",
+    borderRadius: "5px",
+    backgroundColor: "rgba(255,255,255,0.06)",
+    color: "#fff",
+    fontSize: "11px",
+    lineHeight: 1.4,
+    outline: "none",
+    boxSizing: "border-box",
+    resize: "vertical",
+    fontFamily: "inherit",
+  },
+  hint: {
+    color: "rgba(255,255,255,0.35)",
+    fontSize: "10px",
+    lineHeight: 1.5,
+    paddingLeft: "73px",
   },
   select: {
     flex: 1,
