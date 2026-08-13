@@ -1,4 +1,5 @@
 use parking_lot::Mutex;
+use tauri_plugin_shell::process::CommandChild;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -27,6 +28,12 @@ pub struct AppState {
     /// TTS playback thread. Without it the device is fixed for the session and
     /// changing it in settings does nothing until stop/start.
     pub output_device_tx: Mutex<Option<mpsc::Sender<(String, String)>>>,
+    /// The server process this app spawned, held so it can be killed when the
+    /// app exits. Dropping the handle does *not* kill the process, and an
+    /// orphaned server keeps port 8765 and answers `/health` with 200 while
+    /// resetting every WebSocket -- a state indistinguishable from a broken app
+    /// unless you read the client's stderr.
+    pub server_child: Mutex<Option<CommandChild>>,
 }
 
 impl AppState {
@@ -41,6 +48,7 @@ impl AppState {
             tts_audio_tx: Mutex::new(None),
             stop_tts_tx: Mutex::new(None),
             output_device_tx: Mutex::new(None),
+            server_child: Mutex::new(None),
         }
     }
 }

@@ -49,6 +49,22 @@ pub fn run() {
             permissions::request_permissions,
             permissions::open_permission_settings,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // Take the server down with the app. Without this the server it
+            // spawned survives as an orphan holding port 8765 and answering
+            // /health while resetting every WebSocket -- indistinguishable
+            // from a broken app unless you read the client's stderr.
+            if let tauri::RunEvent::Exit = event {
+                let state = app_handle.state::<SharedState>();
+                let child = state.server_child.lock().take();
+                if let Some(child) = child {
+                    match child.kill() {
+                        Ok(()) => log::info!("Spawned server stopped with the app"),
+                        Err(e) => log::warn!("Could not stop the spawned server: {e}"),
+                    }
+                }
+            }
+        });
 }

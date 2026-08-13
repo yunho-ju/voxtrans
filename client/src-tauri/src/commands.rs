@@ -525,12 +525,17 @@ fn should_spawn(last_spawn: Option<Instant>, now: Instant) -> bool {
 /// when the guard held and nothing new was spawned -- the frontend treats
 /// both as success and resumes polling either way.
 ///
-/// The returned child handle is intentionally dropped rather than tracked
-/// in app state: the frontend observes whether the spawn "took" by polling
-/// `check_server_health` separately, and tauri-plugin-shell's
-/// `CommandChild` does not kill its process on drop.
+/// The child handle is kept in app state so the app can kill the server on
+/// exit (see `lib.rs`'s `RunEvent::Exit`). Dropping it does *not* kill the
+/// process, and an orphaned server holds port 8765 while answering `/health`
+/// with 200 and resetting every WebSocket -- which the UI shows as start
+/// bouncing straight back to stop, exactly like a permissions failure.
 #[tauri::command]
-pub async fn start_server(app: AppHandle, server_dir: String) -> Result<String, String> {
+pub async fn start_server(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    server_dir: String,
+) -> Result<String, String> {
     let python_path = resolve_server_python(&server_dir)?;
 
     let now = Instant::now();
@@ -540,12 +545,17 @@ pub async fn start_server(app: AppHandle, server_dir: String) -> Result<String, 
     }
 
     use tauri_plugin_shell::ShellExt;
-    app.shell()
+    let (_rx, child) = app
+        .shell()
         .command(python_path)
         .args(["-m", "src.main"])
         .current_dir(PathBuf::from(&server_dir))
         .spawn()
         .map_err(|e| format!("Failed to start server: {e}"))?;
+    // Replacing an existing handle (a previous spawn whose server has since
+    // died) just drops the stale one, which is harmless -- it is the *live*
+    // process we must not lose track of.
+    *state.server_child.lock() = Some(child);
     *last_spawn = Some(now);
     Ok("spawned".to_string())
 }
