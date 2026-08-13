@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" shape-rendering="geometricPrecision">
+  <!-- VoxTrans lettermark.
+       A single V whose two strokes are different colours and meet at one
+       vertex: two languages converging on one point. Drawn as geometry rather
+       than type so the two halves are exact mirrors of each other. -->
+  <rect x="0" y="0" width="1024" height="1024" rx="230" ry="230" fill="#fbfbfd"/>
+  <path d="M240,250 L380,250 L582,760 L442,760 Z" fill="#7c3aed"/>
+  <path d="M784,250 L644,250 L442,760 L582,760 Z" fill="#06b6d4"/>
+</svg>
