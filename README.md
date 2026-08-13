@@ -382,6 +382,27 @@ the ones that were expensive to learn — why mic audio is discarded rather than
 queued while TTS plays, why a 384 ms floor is not the 400 ms it looks like —
 are written down where you will trip over them, not in a separate document.
 
+## Using it from your own code
+
+The server is a plain FastAPI process on `localhost:8765`, so the pipeline is
+usable without the app:
+
+| | |
+|---|---|
+| `GET /health` | `{"status":"ok"}` once the models are loaded |
+| `POST /translate` | `{"text": "...", "target_language": "korean"}` → `{"translated": "..."}` |
+| `WS /ws` | the live pipeline: send audio frames, receive transcriptions and translations |
+
+`/translate` is a single request, no audio involved — the cheapest way to reuse
+the local translation model for something else entirely.
+
+The WebSocket protocol is what the app speaks, and it is not documented yet;
+`server/src/protocol.py` is the source of truth. **Anyone who wants a real API
+here is very welcome** — a documented protocol, an OpenAPI schema, a client
+library, a CLI, an endpoint that takes a WAV file and returns subtitles. Open
+an issue with what you want to build against and it will get shaped around
+that, rather than guessed at.
+
 ## Status
 
 Under active development, and shaped by being used rather than planned: most
