@@ -64,13 +64,31 @@ class VoiceActivityDetector:
         silence_windows: int = VAD_SILENCE_WINDOWS,
         intermediate_speech_windows: int = 0,
         intermediate_silence_windows: int = 0,
+        max_speech_windows: int = VAD_MAX_SPEECH_WINDOWS,
     ) -> None:
         self._model = create_vad_model()
         self._silence_windows_threshold = silence_windows
         self._intermediate_speech_windows = intermediate_speech_windows
         self._intermediate_silence_windows = intermediate_silence_windows
+        self._max_speech_windows = max_speech_windows
         self._remainder = np.array([], dtype=np.float32)
         self.reset()
+
+    def set_pace(
+        self,
+        intermediate_speech_windows: int,
+        intermediate_silence_windows: int,
+        max_speech_windows: int,
+    ) -> None:
+        """Retune segmentation without rebuilding the detector.
+
+        Reconstructing would reload the Silero model and throw away the state
+        machine mid-stream; these three thresholds are only read on the next
+        window, so assigning them is enough.
+        """
+        self._intermediate_speech_windows = intermediate_speech_windows
+        self._intermediate_silence_windows = intermediate_silence_windows
+        self._max_speech_windows = max_speech_windows
 
     def reset(self) -> None:
         self._state = VadState.SILENCE
@@ -131,7 +149,7 @@ class VoiceActivityDetector:
             self._silence_counter = 0
 
         # Force split at max duration
-        if self._speech_window_count >= VAD_MAX_SPEECH_WINDOWS:
+        if self._speech_window_count >= self._max_speech_windows:
             logger.debug("VAD: forced split at %d windows", self._speech_window_count)
             return self._flush()
 

@@ -6,13 +6,54 @@ import numpy as np
 from .audio_buffer import AudioBuffer
 from .config import (
     MIC_VAD_SILENCE_WINDOWS,
+    SUBTITLE_PACE_DEFAULT,
+    SUBTITLE_PACE_MAX_S_RANGE,
+    SUBTITLE_PACE_PRESETS,
+    SUBTITLE_PACE_SILENCE_MS_RANGE,
+    SUBTITLE_PACE_SPEECH_S_RANGE,
     TTS_DEFAULT_VOICE,
-    VAD_INTERMEDIATE_SILENCE_WINDOWS,
-    VAD_INTERMEDIATE_SPEECH_WINDOWS,
+    VAD_WINDOW_DURATION_MS,
 )
 from .vad import VoiceActivityDetector
 
 logger = logging.getLogger(__name__)
+
+
+def _clamp(value: float, bounds: tuple[int, int], fallback: int) -> int:
+    """Coerce a client-supplied number into `bounds`, or fall back."""
+    try:
+        number = int(round(float(value)))
+    except (TypeError, ValueError):
+        return fallback
+    low, high = bounds
+    return max(low, min(high, number))
+
+
+def clamp_pace(
+    speech_s: float, silence_ms: float, max_s: float
+) -> tuple[int, int, int]:
+    """Sanitise a hand-entered subtitle pace.
+
+    These reach the audio path straight from a settings field, so every value
+    is clamped rather than trusted, and a `max_s` below `speech_s` is raised to
+    meet it -- otherwise the forced split fires before the intermediate one can
+    ever apply, and the setting silently does nothing.
+    """
+    defaults = SUBTITLE_PACE_PRESETS[SUBTITLE_PACE_DEFAULT]
+    speech = _clamp(speech_s, SUBTITLE_PACE_SPEECH_S_RANGE, defaults[0])
+    silence = _clamp(silence_ms, SUBTITLE_PACE_SILENCE_MS_RANGE, defaults[1])
+    maximum = _clamp(max_s, SUBTITLE_PACE_MAX_S_RANGE, defaults[2])
+    return speech, silence, max(maximum, speech)
+
+
+def pace_windows(speech_s: float, silence_ms: float, max_s: float) -> tuple[int, int, int]:
+    """Convert a subtitle pace, in human units, into VAD window counts."""
+    speech, silence, maximum = clamp_pace(speech_s, silence_ms, max_s)
+    return (
+        speech * 1000 // VAD_WINDOW_DURATION_MS,
+        silence // VAD_WINDOW_DURATION_MS,
+        maximum * 1000 // VAD_WINDOW_DURATION_MS,
+    )
 
 
 @dataclass
@@ -41,9 +82,12 @@ class ClientSession:
         self.language = "auto"
         self.target_language = ""
         self.audio_buffer = AudioBuffer()
+        self.subtitle_pace = SUBTITLE_PACE_PRESETS[SUBTITLE_PACE_DEFAULT]
+        speech_w, silence_w, max_w = pace_windows(*self.subtitle_pace)
         self.vad = VoiceActivityDetector(
-            intermediate_speech_windows=VAD_INTERMEDIATE_SPEECH_WINDOWS,
-            intermediate_silence_windows=VAD_INTERMEDIATE_SILENCE_WINDOWS,
+            intermediate_speech_windows=speech_w,
+            intermediate_silence_windows=silence_w,
+            max_speech_windows=max_w,
         )
         self._segment_counter = 0
 
@@ -85,6 +129,7 @@ class ClientSession:
         voice_clone: bool = True,
         mic_mode: str = "",
         translation_prompt: str = "",
+        subtitle_pace: tuple[float, float, float] | None = None,
     ) -> None:
         self.language = language
         self.target_language = target_language
@@ -100,11 +145,18 @@ class ClientSession:
         # Empty means "use the server default" -- assigned unconditionally so
         # clearing the field in settings restores the default mid-session.
         self.translation_prompt = translation_prompt
+        if subtitle_pace is not None:
+            cleaned = clamp_pace(*subtitle_pace)
+            if cleaned != self.subtitle_pace:
+                self.subtitle_pace = cleaned
+                # Retuned in place: rebuilding would reload the Silero model
+                # and drop whatever is mid-utterance.
+                self.vad.set_pace(*pace_windows(*cleaned))
         logger.info(
-            "Session %s: language=%s, target=%s, mode=%s, voice=%s, speak_target=%s, clone=%s, mic=%s",
+            "Session %s: language=%s, target=%s, mode=%s, voice=%s, speak_target=%s, clone=%s, mic=%s, pace=%s",
             self.session_id, language, target_language,
             self.mode, self.tts_voice, self.speak_target_language,
-            self.voice_clone, self.mic_mode,
+            self.voice_clone, self.mic_mode, self.subtitle_pace,
         )
 
     def reset(self) -> None:

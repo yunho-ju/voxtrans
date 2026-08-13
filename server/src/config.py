@@ -108,6 +108,38 @@ MIC_VAD_SILENCE_WINDOWS = MIC_VAD_SILENCE_DURATION_MS // VAD_WINDOW_DURATION_MS 
 PTT_MIN_HOLD_S = 0.3   # shorter holds are key-bounce, not speech — dropped
 PTT_MAX_HOLD_S = 60    # safety cap for a stuck/forgotten key; commits early
 
+# Subtitle pace: how eagerly listen mode cuts a speaker's audio into segments.
+# Every segment costs a full ASR + translation pass, and a subtitle cannot
+# appear until its segment ends -- so cutting sooner shows text sooner, at the
+# price of translating fragments instead of whole thoughts.
+#
+# Exposed as three named choices rather than three numbers: they only make
+# sense together, and the thing being traded (latency against translation
+# quality) is what someone actually has an opinion about.
+#
+# The three values are sent as numbers; the presets below are starting points
+# the app offers as one-click fills, not a closed set of choices.
+#
+# Bounds exist because these reach the audio path from a client. Anything
+# outside them is clamped rather than rejected: a nonsensical value should
+# produce sane subtitles, not a session that dies mid-meeting.
+SUBTITLE_PACE_SPEECH_S_RANGE = (1, 60)
+SUBTITLE_PACE_SILENCE_MS_RANGE = (VAD_WINDOW_DURATION_MS, 3000)
+SUBTITLE_PACE_MAX_S_RANGE = (3, 120)
+
+#   (intermediate_speech_s, intermediate_silence_ms, max_speech_s)
+SUBTITLE_PACE_PRESETS = {
+    # Cuts at the first real breath. Subtitles keep up with a fast speaker;
+    # sentences are often split across two of them.
+    "fast": (3, 300, 12),
+    # The measured default: whole sentences, noticeably later.
+    "balanced": (8, 400, 30),
+    # Waits for long pauses. Best translations, worst latency -- useful when
+    # reading a transcript afterwards matters more than following live.
+    "accurate": (15, 600, 45),
+}
+SUBTITLE_PACE_DEFAULT = "fast"
+
 # Binary WebSocket prefixes
 AUDIO_PREFIX_SYSTEM = 0x01
 AUDIO_PREFIX_MIC = 0x02

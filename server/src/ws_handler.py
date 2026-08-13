@@ -748,6 +748,7 @@ async def _handle_control(
             voice_clone=config.voice_clone,
             mic_mode=config.mic_mode,
             translation_prompt=config.translation_prompt,
+            subtitle_pace=config.subtitle_pace,
         )
         async with ws_lock:
             await websocket.send_text(

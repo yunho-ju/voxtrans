@@ -19,6 +19,20 @@ class MessageType(str, Enum):
     STATUS = "status"
 
 
+def _parse_pace(raw) -> tuple[float, float, float] | None:
+    """Read a subtitle pace out of a configure message.
+
+    Anything that is not three numbers is treated as "not supplied" -- the
+    session then keeps its current pace instead of adopting a malformed one.
+    """
+    if not isinstance(raw, (list, tuple)) or len(raw) != 3:
+        return None
+    try:
+        return (float(raw[0]), float(raw[1]), float(raw[2]))
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass
 class ConfigureMessage:
     language: str = "auto"
@@ -29,6 +43,9 @@ class ConfigureMessage:
     voice_clone: bool = True
     mic_mode: str = "auto"  # "auto" (VAD) or "push_to_talk"
     translation_prompt: str = ""  # "" = server default template
+    # (intermediate_speech_s, intermediate_silence_ms, max_speech_s), or None
+    # to leave the session's pace alone. Values are clamped server-side.
+    subtitle_pace: tuple[float, float, float] | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "ConfigureMessage":
@@ -41,6 +58,7 @@ class ConfigureMessage:
             voice_clone=data.get("voice_clone", True),
             mic_mode=data.get("mic_mode", "auto"),
             translation_prompt=data.get("translation_prompt", ""),
+            subtitle_pace=_parse_pace(data.get("subtitle_pace")),
         )
 
 
