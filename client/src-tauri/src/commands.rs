@@ -358,7 +358,7 @@ pub async fn start_capture(
             error!("Audio capture error: {}", e);
             let _ = app_audio.emit(
                 "permission-error",
-                serde_json::json!({ "kind": "screen_capture", "message": e.clone() }),
+                serde_json::json!({ "kind": "system_audio", "message": e.clone() }),
             );
             let _ = app_audio.emit("server-error", e);
         }

@@ -421,35 +421,21 @@ private func buildSckCaptureGraph() -> Bool {
 
 // MARK: - Permissions
 //
-// Screen Recording ("Screen & System Audio Recording" in System Settings) is
-// what the Core Audio process tap needs, and a denial is invisible from the
-// capture side: `buildSckCaptureGraph` simply fails and the session ends, which
-// the UI shows as start bouncing straight back to stop. Checking up front turns
-// that into a dialog the user can act on.
+// Only the microphone is preflighted here, and deliberately so.
 //
-// Note that a *rebuilt* app bundle can invalidate an existing grant even though
-// the entry still appears (and looks enabled) in System Settings -- the TCC row
-// is bound to the old signature. Preflight reports the effective answer, not
-// what the settings pane draws, so it catches that case too.
+// System audio is captured with a Core Audio process tap
+// (`AudioHardwareCreateProcessTap`), not ScreenCaptureKit, so the permission it
+// needs is "System Audio Recording Only" (`kTCCServiceAudioCapture`) rather
+// than Screen Recording. `CGPreflightScreenCaptureAccess()` answers for Screen
+// Recording, which this app never requests, so its answer says nothing about
+// whether the tap will work.
+//
+// Core Audio taps have no preflight API of their own, and the only way to test
+// one is to build a tap, which means touching the audio graph. So the
+// system-audio permission is not guessed at up front: `sck_start_capture`
+// reports its real failure, and that is what the UI surfaces.
 
 /// 0 = denied/undetermined, 1 = granted.
-@_cdecl("perm_check_screen_capture")
-func permCheckScreenCapture() -> Bool {
-    return CGPreflightScreenCaptureAccess()
-}
-
-/// Shows the system dialog if the app has never asked. Returns the state
-/// *after* asking. macOS only prompts once per app signature; once denied, the
-/// user has to change it in System Settings, which is what `perm_open_settings`
-/// is for.
-@_cdecl("perm_request_screen_capture")
-func permRequestScreenCapture() -> Bool {
-    if CGPreflightScreenCaptureAccess() {
-        return true
-    }
-    return CGRequestScreenCaptureAccess()
-}
-
 @_cdecl("perm_check_microphone")
 func permCheckMicrophone() -> Bool {
     return AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
@@ -476,7 +462,11 @@ func permRequestMicrophone() -> Bool {
     return granted
 }
 
-/// Opens the relevant System Settings pane. `kind` is "screen" or "microphone".
+/// Opens the relevant System Settings pane. `kind` is "microphone" or
+/// "system_audio". System audio lives under the Screen Recording pane on
+/// macOS -- Apple lists "System Audio Recording Only" there, which is why the
+/// anchor is `Privacy_ScreenCapture` even though this app never records the
+/// screen.
 @_cdecl("perm_open_settings")
 func permOpenSettings(kind: UnsafePointer<CChar>) {
     let which = String(cString: kind)

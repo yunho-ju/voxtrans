@@ -1,34 +1,35 @@
-//! macOS capture permissions, asked for up front instead of discovered on failure.
+//! macOS microphone permission, asked for up front instead of discovered on
+//! failure.
 //!
-//! Without this, a missing Screen Recording grant surfaced only as
-//! `sck_start_capture` returning false: the session ended immediately and the
-//! UI bounced start back to stop with no explanation. Worse, a rebuilt bundle
-//! can invalidate a grant while System Settings still shows it enabled (the TCC
-//! row is bound to the previous signature), so "check the settings pane" is not
-//! a reliable answer either. Preflight reports the effective state.
+//! Only the microphone is checked here. System audio goes through a Core Audio
+//! process tap, whose permission ("System Audio Recording Only") has no
+//! preflight API, and the only way to test one is to build a tap -- which means
+//! touching the audio graph on every launch. So it is not guessed at:
+//! `sck_start_capture` reports its real failure and the capture-start path
+//! surfaces that.
+//!
+//! `CGPreflightScreenCaptureAccess` is deliberately not used. It answers for
+//! Screen Recording, which this app never requests, so its answer says nothing
+//! about whether system audio will work.
 
 use std::ffi::CString;
 
 extern "C" {
-    fn perm_check_screen_capture() -> bool;
-    fn perm_request_screen_capture() -> bool;
     fn perm_check_microphone() -> bool;
     fn perm_request_microphone() -> bool;
     fn perm_open_settings(kind: *const std::os::raw::c_char);
 }
 
-/// What the app may do right now, per capture path.
+/// What the app may do right now. System audio is deliberately absent: see the
+/// module docs for why guessing at it did more harm than good.
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 pub struct PermissionStatus {
-    /// Screen & System Audio Recording -- required for listen mode.
-    pub screen: bool,
-    /// Microphone -- required for speak mode.
+    /// Microphone -- required to speak. Subtitles do not need it.
     pub microphone: bool,
 }
 
 pub fn status() -> PermissionStatus {
     PermissionStatus {
-        screen: unsafe { perm_check_screen_capture() },
         microphone: unsafe { perm_check_microphone() },
     }
 }
@@ -47,7 +48,6 @@ pub async fn request_permissions() -> Result<PermissionStatus, String> {
     // `perm_request_microphone` blocks on a semaphore until the user answers,
     // so this must not run on the UI thread.
     tauri::async_runtime::spawn_blocking(|| PermissionStatus {
-        screen: unsafe { perm_request_screen_capture() },
         microphone: unsafe { perm_request_microphone() },
     })
     .await
@@ -57,7 +57,7 @@ pub async fn request_permissions() -> Result<PermissionStatus, String> {
 #[tauri::command]
 pub fn open_permission_settings(kind: String) -> Result<(), String> {
     let which = match kind.as_str() {
-        "microphone" | "screen" => kind,
+        "microphone" | "system_audio" => kind,
         other => return Err(format!("Unknown permission kind: {}", other)),
     };
     let c_kind = CString::new(which).map_err(|e| e.to_string())?;

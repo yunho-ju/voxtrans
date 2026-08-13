@@ -14,7 +14,10 @@ interface OutputDevice {
   uid: string;
 }
 
-type PermissionKind = "screen_capture" | "microphone";
+// "system_audio" is the Core Audio process tap's permission. macOS lists it
+// under Screen Recording as "System Audio Recording Only"; this app never
+// records the screen and does not need full Screen Recording.
+type PermissionKind = "system_audio" | "microphone";
 
 interface PermissionErrorPayload {
   kind: PermissionKind;
@@ -24,14 +27,14 @@ interface PermissionErrorPayload {
 // macOS System Settings deep links for each permission kind `commands.rs`'s
 // two capture-start catch sites can report via the `permission-error` event.
 const PERMISSION_SETTINGS_URLS: Record<PermissionKind, string> = {
-  screen_capture:
+  system_audio:
     "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
   microphone:
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
 };
 
 const PERMISSION_LABELS: Record<PermissionKind, string> = {
-  screen_capture: "화면 및 시스템 오디오 기록",
+  system_audio: "시스템 오디오 녹음",
   microphone: "마이크",
 };
 
@@ -192,17 +195,18 @@ const App: React.FC = () => {
     };
   }, []);
 
-  // Ask for capture permissions on launch, before anything needs them.
-  // `request_permissions` shows the system dialogs for whatever is still
-  // undetermined and returns the state afterwards; anything still missing is
-  // a denial only System Settings can undo, so it becomes a banner.
+  // Ask for the microphone on launch, before speaking needs it. System audio
+  // is deliberately not preflighted: it goes through a Core Audio tap whose
+  // permission has no preflight API, and the previous attempt checked Screen
+  // Recording instead — warning about a permission this app never uses while
+  // capture worked fine. System-audio failures surface through
+  // `permission-error` at capture-start time, where they are real.
   useEffect(() => {
     let cancelled = false;
-    invoke<{ screen: boolean; microphone: boolean }>("request_permissions")
+    invoke<{ microphone: boolean }>("request_permissions")
       .then((status) => {
         if (cancelled) return;
         const missing: PermissionKind[] = [];
-        if (!status.screen) missing.push("screen_capture");
         if (!status.microphone) missing.push("microphone");
         setMissingPermissions(missing);
       })
@@ -472,7 +476,7 @@ const App: React.FC = () => {
         <div style={styles.errorBanner} role="alert">
           <span style={styles.errorBannerText}>
             {PERMISSION_LABELS[missingPermissions[0]]} 권한이 없어
-            {missingPermissions[0] === "screen_capture"
+            {missingPermissions[0] === "system_audio"
               ? " 회의 소리를 못 듣습니다."
               : " 말하기를 쓸 수 없습니다."}
             {" 허용 후 앱을 다시 시작하세요."}
@@ -481,8 +485,8 @@ const App: React.FC = () => {
             onClick={() => {
               invoke("open_permission_settings", {
                 kind:
-                  missingPermissions[0] === "screen_capture"
-                    ? "screen"
+                  missingPermissions[0] === "system_audio"
+                    ? "system_audio"
                     : "microphone",
               }).catch(() => {});
             }}

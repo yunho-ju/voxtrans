@@ -47,7 +47,7 @@ const invokeMock = vi.fn(async (cmd: string, _args?: Record<string, unknown>) =>
   if (cmd === "list_output_devices") return OUTPUT_DEVICES;
   if (cmd === "list_devices") return INPUT_DEVICES;
   // Default: everything granted, so existing tests exercise the normal path.
-  if (cmd === "request_permissions") return { screen: true, microphone: true };
+  if (cmd === "request_permissions") return { microphone: true };
   return undefined;
 });
 
@@ -68,7 +68,7 @@ function emit(event: string, payload: string) {
   for (const cb of listenCallbacks[event] ?? []) cb({ payload });
 }
 
-function emitPermissionError(kind: "screen_capture" | "microphone", message: string) {
+function emitPermissionError(kind: "system_audio" | "microphone", message: string) {
   for (const cb of listenCallbacks["permission-error"] ?? []) cb({ payload: { kind, message } });
 }
 
@@ -276,7 +276,7 @@ describe("permission-error deep-links to System Settings", () => {
     await renderWithBanner();
 
     act(() => {
-      emitPermissionError("screen_capture", "Grant Screen Recording permission in System Settings.");
+      emitPermissionError("system_audio", "Grant Screen Recording permission in System Settings.");
     });
 
     expect(openMock).toHaveBeenCalledTimes(1);
@@ -288,10 +288,10 @@ describe("permission-error deep-links to System Settings", () => {
     await renderWithBanner();
 
     act(() => {
-      emitPermissionError("screen_capture", "first failure");
+      emitPermissionError("system_audio", "first failure");
     });
     act(() => {
-      emitPermissionError("screen_capture", "second failure");
+      emitPermissionError("system_audio", "second failure");
     });
 
     expect(openMock).toHaveBeenCalledTimes(1);
@@ -301,7 +301,7 @@ describe("permission-error deep-links to System Settings", () => {
   it("C3: clicking the banner's settings button opens Settings on every click, independent of the auto-open limit", async () => {
     await renderWithBanner();
     act(() => {
-      emitPermissionError("screen_capture", "failure");
+      emitPermissionError("system_audio", "failure");
     });
     expect(openMock).toHaveBeenCalledTimes(1); // the automatic open only
 
@@ -353,7 +353,7 @@ describe("permission-error deep-links to System Settings", () => {
   it("dismissing the banner clears the remembered permission kind", async () => {
     await renderWithBanner();
     act(() => {
-      emitPermissionError("screen_capture", "failure");
+      emitPermissionError("system_audio", "failure");
     });
     expect(screen.getByText("설정 열기")).toBeTruthy();
 
@@ -446,10 +446,12 @@ describe("the meeting preset routes output to BlackHole and mic to a real input"
 });
 
 describe("startup permission check", () => {
-  // The reason this runs before anything needs the permission: a missing
-  // Screen Recording grant used to surface only as start bouncing back to
-  // stop, with the real cause invisible in the UI.
-  function mockPermissions(status: { screen: boolean; microphone: boolean }) {
+  // Only the microphone is preflighted. System audio goes through a Core Audio
+  // tap with no preflight API; the earlier version asked
+  // `CGPreflightScreenCaptureAccess` about it, which answers for a permission
+  // this app never uses -- it reported "denied" while system audio capture was
+  // granted and working, so the banner warned about nothing.
+  function mockPermissions(status: { microphone: boolean }) {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "list_output_devices") return OUTPUT_DEVICES;
       if (cmd === "list_devices") return INPUT_DEVICES;
@@ -458,16 +460,16 @@ describe("startup permission check", () => {
     });
   }
 
-  it("asks for permissions on launch", async () => {
-    mockPermissions({ screen: true, microphone: true });
+  it("asks for the microphone on launch", async () => {
+    mockPermissions({ microphone: true });
     render(<App />);
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("request_permissions", undefined)
     );
   });
 
-  it("says nothing when every permission is granted", async () => {
-    mockPermissions({ screen: true, microphone: true });
+  it("says nothing when the microphone is granted", async () => {
+    mockPermissions({ microphone: true });
     render(<App />);
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("request_permissions", undefined)
@@ -475,24 +477,24 @@ describe("startup permission check", () => {
     expect(screen.queryByText(/권한이 없어/)).toBeNull();
   });
 
-  it("names the missing permission and offers the settings pane", async () => {
-    mockPermissions({ screen: false, microphone: true });
+  it("never warns about system audio on its own, since it cannot know", async () => {
+    // Regression: a granted, working system-audio tap must not produce a
+    // startup warning. Only the capture-start path may report that failure.
+    mockPermissions({ microphone: true });
     render(<App />);
-
-    const banner = await screen.findByText(/화면 및 시스템 오디오 기록 권한이 없어/);
-    expect(banner.textContent).toContain("다시 시작");
-
-    fireEvent.click(screen.getByRole("button", { name: "설정 열기" }));
-    expect(invokeMock).toHaveBeenCalledWith("open_permission_settings", {
-      kind: "screen",
-    });
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("request_permissions", undefined)
+    );
+    expect(screen.queryByText(/시스템 오디오/)).toBeNull();
   });
 
   it("routes a missing microphone grant to the microphone pane", async () => {
-    mockPermissions({ screen: true, microphone: false });
+    mockPermissions({ microphone: false });
     render(<App />);
 
-    await screen.findByText(/마이크 권한이 없어/);
+    const banner = await screen.findByText(/마이크 권한이 없어/);
+    expect(banner.textContent).toContain("다시 시작");
+
     fireEvent.click(screen.getByRole("button", { name: "설정 열기" }));
     expect(invokeMock).toHaveBeenCalledWith("open_permission_settings", {
       kind: "microphone",

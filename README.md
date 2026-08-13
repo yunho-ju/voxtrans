@@ -176,26 +176,35 @@ notarization, which requires the paid Apple Developer Program.
 
 | Permission | Needed for | Where |
 |---|---|---|
-| Screen & System Audio Recording | Listen mode (system-audio tap) | System Settings → Privacy & Security → Screen & System Audio Recording |
-| Microphone | Speak mode | System Settings → Privacy & Security → Microphone |
+| System Audio Recording Only | Subtitles (the system-audio tap) | System Settings → Privacy & Security → **Screen & System Audio Recording** |
+| Microphone | Speaking | System Settings → Privacy & Security → **Microphone** |
 
-The app asks for both on launch, and shows a banner with a shortcut to the
-right settings pane if either is denied. macOS only prompts once per app
-identity — after a denial, only System Settings can change the answer, and
-**the app must be restarted for a newly granted permission to take effect.**
+Note the first row: the app captures system audio with a Core Audio process
+tap and **never records your screen**, but macOS files that permission under
+the Screen Recording pane, where it appears as "System Audio Recording Only".
+Grant that one; full Screen Recording is not required.
+
+The app asks for the microphone on launch. It cannot ask for the system-audio
+permission in advance — Core Audio taps have no such API — so macOS prompts for
+that the first time you press Start. **A newly granted permission takes effect
+only after restarting the app.**
 
 Grant them to whatever actually runs the process: in `tauri dev` that is your
 terminal app, for a bundle it is `VoxTrans.app`.
 
-> **If a permission looks enabled but nothing works**, its entry is probably
-> bound to an older signature of the app (see the signing note above). The
-> entry stays visible and checked while being dead. Remove the app from the
+> **If a permission looks enabled but nothing works**, its entry may be bound
+> to an older signature of the app (see the signing note in [§4](#4-client)).
+> The entry stays visible and checked while being dead. Remove the app from the
 > list with `−`, or reset it outright, then relaunch:
 >
 > ```bash
-> tccutil reset ScreenCapture com.voxtrans.client
+> tccutil reset ScreenCapture com.voxtrans.client   # covers system audio
 > tccutil reset Microphone com.voxtrans.client
 > ```
+>
+> Before reaching for this, check the app's stderr. "Start bounces back to
+> Stop" looks like a permissions problem and usually is not — see
+> [Troubleshooting](#troubleshooting).
 
 ### 6. Speak-mode audio routing
 
@@ -288,7 +297,8 @@ visible. Double-clicking the app sends that output nowhere.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Start immediately flips back to Stop | Capture failed to start, or the WebSocket was reset | Check the app's stderr. `Failed to start audio capture` = permissions; `WebSocket … Connection reset` = server side |
-| No subtitles, no server activity at all | Screen Recording permission is missing or bound to an old signature | See §5, including the `tccutil` reset |
+| No subtitles, no server activity at all | The system-audio permission is missing or bound to an old signature | See §5, including the `tccutil` reset |
+| Start bounces to Stop, but the log says `Audio capture started` | Not a permissions problem — the capture is fine and the WebSocket is failing. A stale server process is the usual cause | Kill any `python -m src.main` still running and start a fresh one |
 | Nothing happens when you speak | Push-to-talk: Space not held, or the app window is not focused | Focus the window and hold Space; the server logs `[speak]` only when mic audio arrives |
 | The meeting cannot hear your translation | Output is not `BlackHole 2ch`, its volume is down, or the meeting app's mic is not BlackHole | Re-check every row in §6 |
 | You cannot hear your own translation | Expected — BlackHole has no speakers | See "Hearing your own translated voice" in §6 |
