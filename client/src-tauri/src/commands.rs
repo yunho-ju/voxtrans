@@ -545,11 +545,21 @@ pub async fn start_server(
     }
 
     use tauri_plugin_shell::ShellExt;
+    // The server watches this pid and exits when it disappears. Killing the
+    // child on `RunEvent::Exit` covers a clean quit, but that event never
+    // arrives on a force-quit or a crash -- which is exactly when an orphaned
+    // server does the most damage.
+    let mut env = std::collections::HashMap::new();
+    env.insert(
+        "VOXTRANS_PARENT_PID".to_string(),
+        std::process::id().to_string(),
+    );
     let (_rx, child) = app
         .shell()
         .command(python_path)
         .args(["-m", "src.main"])
         .current_dir(PathBuf::from(&server_dir))
+        .envs(env)
         .spawn()
         .map_err(|e| format!("Failed to start server: {e}"))?;
     // Replacing an existing handle (a previous spawn whose server has since

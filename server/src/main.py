@@ -3,6 +3,7 @@ import logging
 import os
 import signal
 import subprocess
+import threading
 import time
 from contextlib import asynccontextmanager
 
@@ -134,8 +135,41 @@ def _reclaim_port(port: int) -> None:
                 pass
 
 
+def _watch_parent(parent_pid: int) -> None:
+    """Shut down once `parent_pid` is gone.
+
+    The app sets `VOXTRANS_PARENT_PID` when it spawns the server, and only
+    then does this run: a server started by hand from a terminal has no
+    business exiting when that terminal does.
+
+    The app also kills the server on its own clean exit, but that path does not
+    run when the app is force-quit or crashes. An orphaned server keeps port
+    8765 and answers `/health` with 200 while resetting every WebSocket the
+    next app opens, which looks like a broken app rather than a stale server.
+    Watching the parent covers every way it can die.
+    """
+    while True:
+        time.sleep(2)
+        try:
+            os.kill(parent_pid, 0)
+        except ProcessLookupError:
+            logger.info("Parent process %d is gone; shutting down", parent_pid)
+            # SIGTERM rather than a hard exit so uvicorn runs its shutdown and
+            # the TTS worker process is cleaned up instead of being leaked.
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
+        except PermissionError:
+            # Still alive, just not ours to signal.
+            continue
+
+
 def main() -> None:
     _reclaim_port(PORT)
+    parent_pid = os.environ.get("VOXTRANS_PARENT_PID")
+    if parent_pid and parent_pid.isdigit():
+        threading.Thread(
+            target=_watch_parent, args=(int(parent_pid),), daemon=True
+        ).start()
     uvicorn.run(
         "src.main:app",
         host=HOST,
