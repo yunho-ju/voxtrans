@@ -17,7 +17,8 @@ server/*.pyc
 specs/
 PRODUCT.md
 
-# impeccable transients (decision sketches, question pages, downloaded craft-bar refs)
-.impeccable/sketches/
-.impeccable/questions/
-.impeccable/specimen-*.webp
+# Tooling and working artifacts kept on disk but out of the repo, for the same
+# reason as specs/: they record how this was built, not what it does.
+.specify/
+.agents/
+.impeccable/
