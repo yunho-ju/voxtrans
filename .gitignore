@@ -11,6 +11,11 @@ server/*.pyc
 .env
 .DS_Store
 
+# Working notes: feature specs, task lists, measured evidence, decision
+# records, and HANDOFF.md. Kept on disk, deliberately out of the repo --
+# they are a personal working log, not part of what this project ships.
+specs/
+
 # impeccable transients (decision sketches, question pages, downloaded craft-bar refs)
 .impeccable/sketches/
 .impeccable/questions/

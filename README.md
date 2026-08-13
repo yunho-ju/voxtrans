@@ -41,9 +41,11 @@ inference at a time on the GPU. Default models:
 | Translation | `mlx-community/Qwen3.5-4B-MLX-4bit` |
 | TTS | `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit` |
 
-Every model choice in this repo was made by measurement — the benchmark
-harness and the side-by-side comparisons that drove each decision live in
-`specs/` and can be re-run (see [Benchmarks](#benchmarks)).
+Every model choice here was made by measurement rather than reputation: each
+candidate was run against the same latency budgets and the same set of
+translation samples, and the losers lost on numbers. The harness that produced
+those numbers ships with the repo and can be re-run against any other model —
+see [Benchmarks](#benchmarks).
 
 ## Requirements
 
@@ -315,8 +317,11 @@ cd server
 ```
 
 Suites: `e2e`, `asr`, `translation`, `tts_chunks`, `subtitle`, `memory`.
-The CLI contract is documented in
-`specs/001-realtime-latency/contracts/benchmark-cli.md`.
+Run `python -m bench.run --help` for the full CLI.
+
+The harness refuses to overwrite a previous run's results, which matters more
+than it sounds: a benchmark that silently replaces its own evidence lets you
+"improve" a number without noticing you changed what was being measured.
 
 ## Project layout
 
@@ -329,13 +334,13 @@ client/          Tauri 2 app
   src/           React UI (subtitle overlay, settings, controls)
   src-tauri/     Rust core (WS client, device selection, playback lifecycle)
   src-tauri/swift/  ScreenCaptureKit/CoreAudio capture layer
-specs/           feature specs, task lists, measured evidence, decision records
 ```
 
-`specs/` is unusual for an app repo and deliberate: it contains the measured
-evidence (latency numbers, model side-by-sides, budget revisions) behind every
-non-obvious decision in the code. If you wonder *why* a constant or model is
-what it is, grep `specs/` first.
+If you wonder *why* a constant or a model is what it is, the reasoning is in
+the comment next to it. Numbers in this codebase came from measurements, and
+the ones that were expensive to learn — why mic audio is discarded rather than
+queued while TTS plays, why a 384 ms floor is not the 400 ms it looks like —
+are written down where you will trip over them, not in a separate document.
 
 ## Status
 
