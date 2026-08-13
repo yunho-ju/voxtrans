@@ -24,7 +24,7 @@ Honest numbers, measured on an M1 Pro / 32 GB, not projected:
 | Delay from speech to translation | **~2.5 s** end to end |
 | Memory while a session is active | **~8.5 GB** resident |
 | Disk for model weights | ~9 GB (plus ~8 GB if you re-run the model comparisons) |
-| Languages | **Korean ↔ English** only, today |
+| Languages | 5 in the UI (Korean, English, Japanese, Chinese, Spanish), 10 accepted by the server; tuned and measured on **Korean ↔ English** |
 | Platform | **Apple Silicon Mac, macOS 15+** — no Intel, no Windows, no Linux |
 
 Two and a half seconds is not simultaneous interpretation. It is fast enough
@@ -379,10 +379,13 @@ of what is in here was written after a meeting went wrong. macOS-only by
 design — MLX and ScreenCaptureKit have no equivalent elsewhere, and the
 audio-tap layer is Swift.
 
-Korean ↔ English is a default, not a limit: the translation prompt and the
-target language are settings, and the underlying models handle far more
-languages. Other pairs are simply untested, and the ASR and TTS voices were
-chosen by measuring these two.
+Korean ↔ English is where the measurements were taken, not a limit. Source and
+target language are dropdowns (Korean, English, Japanese, Chinese, Spanish),
+the server accepts ten languages, and the translation prompt itself is
+editable — so a pair the UI does not list is a one-line change, not a fork.
+What is genuinely English/Chinese-only is the **spoken** output: the TTS
+voices are Ryan and Aiden (EN) and Vivian and Serena (ZH). Subtitles have no
+such constraint.
 
 Issues and pull requests are welcome. If something failed silently for you,
 that report is more valuable than a feature request — silent failure is this
