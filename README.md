@@ -1,17 +1,42 @@
 # VoxTrans
 
-Real-time, fully local voice translation for meetings on Apple Silicon Macs.
+Real-time voice translation for meetings, running entirely on your own Mac.
 
 VoxTrans sits next to your meeting app (Google Meet, Zoom, …) and translates in
-both directions — everything runs on-device with [MLX](https://github.com/ml-explore/mlx):
-no cloud APIs, no audio leaves your machine.
+both directions:
 
-- **Listen mode** — captures the meeting audio, transcribes it, and shows
-  translated subtitles in a transparent overlay.
-- **Speak mode** — captures your microphone, translates what you say, and
-  speaks the translation into the meeting through a virtual audio device.
+- **Subtitles** — it captures the meeting's audio, transcribes it, and shows
+  the translation in a transparent overlay above the call.
+- **Speaking** — hold a key and talk; it translates what you said and speaks
+  the translation into the meeting through a virtual microphone, so the other
+  participants hear it in their language.
 
-Currently tuned for Korean ↔ English.
+Everything happens on-device with [MLX](https://github.com/ml-explore/mlx).
+No cloud APIs, no account, no audio leaving the machine — which is the point:
+if the meeting is under an NDA, a cloud translator is not an option at all.
+
+## What to expect
+
+Honest numbers, measured on an M1 Pro / 32 GB, not projected:
+
+| | |
+|---|---|
+| Delay from speech to translation | **~2.5 s** end to end |
+| Memory while a session is active | **~8.5 GB** resident |
+| Disk for model weights | ~9 GB (plus ~8 GB if you re-run the model comparisons) |
+| Languages | **Korean ↔ English** only, today |
+| Platform | **Apple Silicon Mac, macOS 15+** — no Intel, no Windows, no Linux |
+
+Two and a half seconds is not simultaneous interpretation. It is fast enough
+to follow a conversation and to answer in it; it is not fast enough to talk
+over someone. The delay is dominated by waiting for you to stop speaking, so
+short sentences feel considerably better than long ones.
+
+**Maturity**: a personal project, used daily in real meetings by its author.
+Subtitles are solid. Speaking works but has fewer hours on it, and its audio
+routing needs a one-time setup ([§6](#6-speak-mode-audio-routing)) that is
+easy to get subtly wrong. Expect to spend twenty minutes on first setup,
+mostly downloading models.
 
 ## How it works
 
@@ -31,8 +56,13 @@ Currently tuned for Korean ↔ English.
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The server chains VAD → ASR → translation → (speak mode only) TTS, one
-inference at a time on the GPU. Default models:
+A Tauri app captures audio and draws the overlay; a local Python server holds
+the models and does the work. They talk over a WebSocket on localhost, which
+is the only network traffic involved.
+
+The server chains VAD → ASR → translation → (when speaking) TTS, one inference
+at a time on the GPU — they contend for the same hardware, so serialising them
+is what keeps the tail latency predictable. Default models:
 
 | Stage | Model |
 |---|---|
@@ -344,9 +374,19 @@ are written down where you will trip over them, not in a separate document.
 
 ## Status
 
-Personal project under active development. Listen mode is used daily in real
-meetings; speak mode's audio routing was recently reworked and is still being
-validated in live calls. macOS-only by design (MLX + ScreenCaptureKit).
+Under active development, and shaped by being used rather than planned: most
+of what is in here was written after a meeting went wrong. macOS-only by
+design — MLX and ScreenCaptureKit have no equivalent elsewhere, and the
+audio-tap layer is Swift.
+
+Korean ↔ English is a default, not a limit: the translation prompt and the
+target language are settings, and the underlying models handle far more
+languages. Other pairs are simply untested, and the ASR and TTS voices were
+chosen by measuring these two.
+
+Issues and pull requests are welcome. If something failed silently for you,
+that report is more valuable than a feature request — silent failure is this
+project's characteristic bug.
 
 ## License
 
