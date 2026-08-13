@@ -13,6 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "./App";
+import { DEFAULT_TRANSLATION_PROMPT } from "./constants";
 
 // Ticket: permission-error -> system settings deep-link banner. `open` is
 // mocked the same way `invoke`/`listen` are above: a stable outer `vi.fn()`
@@ -442,6 +443,148 @@ describe("the meeting preset routes output to BlackHole and mic to a real input"
       "설치"
     );
     expect(window.localStorage.getItem("voxtrans_output_device")).toBeNull();
+  });
+});
+
+describe("the translation prompt field", () => {
+  async function openSettings() {
+    render(<App />);
+    fireEvent.click(screen.getByTitle("Settings"));
+    return screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+  }
+
+  it("starts filled with the default, not empty behind a placeholder", async () => {
+    // Editable in place: a placeholder vanishes on the first keystroke and
+    // leaves the user retyping the whole template from nothing.
+    const field = await openSettings();
+    expect(field.value).toBe(DEFAULT_TRANSLATION_PROMPT);
+  });
+
+  it("sends an edited prompt without needing a restart", async () => {
+    const field = await openSettings();
+    fireEvent.change(field, { target: { value: "To {lang}: {text}" } });
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      "send_configure",
+      expect.objectContaining({ translationPrompt: "To {lang}: {text}" })
+    );
+    expect(window.localStorage.getItem("voxtrans_translation_prompt")).toBe(
+      "To {lang}: {text}"
+    );
+  });
+
+  it("keeps an emptied field empty, which asks the server for its default", async () => {
+    const field = await openSettings();
+    fireEvent.change(field, { target: { value: "" } });
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      "send_configure",
+      expect.objectContaining({ translationPrompt: "" })
+    );
+    // Persisted as "" rather than absent, so the next launch does not
+    // helpfully refill the field the user deliberately cleared.
+    expect(window.localStorage.getItem("voxtrans_translation_prompt")).toBe("");
+  });
+
+  it("restores the default from a customised prompt", async () => {
+    const field = await openSettings();
+    fireEvent.change(field, { target: { value: "something else" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "기본값으로" }));
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      "send_configure",
+      expect.objectContaining({ translationPrompt: DEFAULT_TRANSLATION_PROMPT })
+    );
+  });
+});
+
+describe("the subtitle pace fields", () => {
+  async function openPaceFields() {
+    render(<App />);
+    fireEvent.click(screen.getByTitle("Settings"));
+    return {
+      speech: screen.getByLabelText("분할 시작") as HTMLInputElement,
+      silence: screen.getByLabelText("침묵") as HTMLInputElement,
+      max: screen.getByLabelText("상한") as HTMLInputElement,
+    };
+  }
+
+  function lastPaceSent() {
+    const calls = invokeMock.mock.calls.filter(
+      ([cmd, args]) => cmd === "send_configure" && args && "subtitlePace" in args
+    );
+    return calls.length
+      ? (calls[calls.length - 1][1] as Record<string, unknown>).subtitlePace
+      : undefined;
+  }
+
+  it("can be cleared and retyped", async () => {
+    // Parsing every keystroke turned an emptied field into 0 and wrote it
+    // straight back, so the field could not be edited at all.
+    const { silence } = await openPaceFields();
+
+    fireEvent.change(silence, { target: { value: "" } });
+    expect(silence.value).toBe("");
+
+    fireEvent.change(silence, { target: { value: "350" } });
+    expect(silence.value).toBe("350");
+  });
+
+  it("does not send anything until the field is committed", async () => {
+    const { silence } = await openPaceFields();
+    invokeMock.mockClear();
+
+    fireEvent.change(silence, { target: { value: "3" } });
+    fireEvent.change(silence, { target: { value: "35" } });
+
+    expect(lastPaceSent()).toBeUndefined();
+
+    fireEvent.blur(silence);
+    expect(lastPaceSent()).toEqual([3, 35, 12]);
+  });
+
+  it("commits on Enter", async () => {
+    const { max } = await openPaceFields();
+    invokeMock.mockClear();
+
+    fireEvent.change(max, { target: { value: "20" } });
+    fireEvent.keyDown(max, { key: "Enter" });
+    fireEvent.blur(max);
+
+    expect(lastPaceSent()).toEqual([3, 300, 20]);
+  });
+
+  it("snaps an out-of-range entry to the bound it broke", async () => {
+    // The server clamps silently and does not echo the result, so a field
+    // left showing 999 would name a setting the pipeline is not using.
+    const { speech } = await openPaceFields();
+
+    fireEvent.change(speech, { target: { value: "999" } });
+    fireEvent.blur(speech);
+
+    expect(speech.value).toBe("60");
+    expect(lastPaceSent()).toEqual([60, 300, 60]);
+  });
+
+  it("restores the previous value when the entry is not a number", async () => {
+    const { silence } = await openPaceFields();
+
+    fireEvent.change(silence, { target: { value: "abc" } });
+    fireEvent.blur(silence);
+
+    expect(silence.value).toBe("300");
+  });
+
+  it("fills every field from a preset, and keeps edits made afterwards", async () => {
+    const { speech, silence, max } = await openPaceFields();
+
+    fireEvent.click(screen.getByRole("button", { name: "균형" }));
+    expect([speech.value, silence.value, max.value]).toEqual(["8", "400", "30"]);
+
+    fireEvent.change(silence, { target: { value: "450" } });
+    fireEvent.blur(silence);
+    expect(lastPaceSent()).toEqual([8, 450, 30]);
   });
 });
 

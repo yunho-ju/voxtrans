@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from "react";
+import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-shell";
@@ -8,6 +8,11 @@ import Controls from "./components/Controls";
 import TrafficLights from "./components/TrafficLights";
 import SettingsDrawer from "./components/SettingsDrawer";
 import { useTranscription } from "./hooks/useTranscription";
+import {
+  DEFAULT_SUBTITLE_PACE,
+  DEFAULT_TRANSLATION_PROMPT,
+  type SubtitlePace,
+} from "./constants";
 
 interface OutputDevice {
   name: string;
@@ -90,11 +95,24 @@ const App: React.FC = () => {
   const [speakTargetLanguage, setSpeakTargetLanguage] = useState("English");
   const [voiceClone, setVoiceClone] = useState(true);
   const [micMode, setMicMode] = useState("auto");
-  // Empty = server default template. Persisted so a tuned prompt survives a
-  // restart, which is the whole point of making it editable.
+  // Pre-filled with the default so the field can be edited rather than
+  // retyped; `??` not `||` so a deliberately emptied field stays empty on the
+  // next launch instead of springing back. An empty prompt tells the server to
+  // use its own default.
   const [translationPrompt, setTranslationPrompt] = useState(
-    () => localStorage.getItem("voxtrans_translation_prompt") || ""
+    () =>
+      localStorage.getItem("voxtrans_translation_prompt") ??
+      DEFAULT_TRANSLATION_PROMPT
   );
+  const [subtitlePace, setSubtitlePace] = useState<SubtitlePace>(() => {
+    const saved = localStorage.getItem("voxtrans_subtitle_pace");
+    if (!saved) return DEFAULT_SUBTITLE_PACE;
+    try {
+      return { ...DEFAULT_SUBTITLE_PACE, ...JSON.parse(saved) };
+    } catch {
+      return DEFAULT_SUBTITLE_PACE;
+    }
+  });
   const [micActive, setMicActive] = useState(false);
   const [opacity, setOpacity] = useState(0.4);
   const [showSettings, setShowSettings] = useState(false);
@@ -127,6 +145,8 @@ const App: React.FC = () => {
   micModeRef.current = micMode;
   const translationPromptRef = useRef(translationPrompt);
   translationPromptRef.current = translationPrompt;
+  const subtitlePaceRef = useRef(subtitlePace);
+  subtitlePaceRef.current = subtitlePace;
 
   // Load output devices on mount
   useEffect(() => {
@@ -232,12 +252,17 @@ const App: React.FC = () => {
         voiceClone: voiceCloneRef.current,
         micMode: micModeRef.current,
         translationPrompt: translationPromptRef.current,
+        subtitlePace: [
+          subtitlePaceRef.current.speechS,
+          subtitlePaceRef.current.silenceMs,
+          subtitlePaceRef.current.maxS,
+        ],
       }).catch(() => {});
     }
   }, [connectionStatus]);
 
   const sendConfigure = useCallback(
-    async (overrides: Record<string, string | boolean> = {}) => {
+    async (overrides: Record<string, string | boolean | number[]> = {}) => {
       try {
         await invoke("send_configure", {
           language: overrides?.language ?? sourceLanguageRef.current,
@@ -250,6 +275,12 @@ const App: React.FC = () => {
           micMode: overrides.micMode ?? micModeRef.current,
           translationPrompt:
             overrides.translationPrompt ?? translationPromptRef.current,
+          subtitlePace:
+            overrides.subtitlePace ?? [
+              subtitlePaceRef.current.speechS,
+              subtitlePaceRef.current.silenceMs,
+              subtitlePaceRef.current.maxS,
+            ],
         });
       } catch {
         // Not connected yet
@@ -298,6 +329,18 @@ const App: React.FC = () => {
       localStorage.setItem("voxtrans_translation_prompt", prompt);
       // Applies to the next segment; no stop/start needed.
       sendConfigure({ translationPrompt: prompt });
+    },
+    [sendConfigure]
+  );
+
+  const handleSubtitlePaceChange = useCallback(
+    (pace: SubtitlePace) => {
+      setSubtitlePace(pace);
+      localStorage.setItem("voxtrans_subtitle_pace", JSON.stringify(pace));
+      // Applies at the next segment boundary; no stop/start needed.
+      sendConfigure({
+        subtitlePace: [pace.speechS, pace.silenceMs, pace.maxS],
+      });
     },
     [sendConfigure]
   );
@@ -417,29 +460,43 @@ const App: React.FC = () => {
     }
   }, [textInput, isTtsSpeaking]);
 
-  // Glass background
-  const bgAlpha = opacity * 0.6;
-  const whiteAlpha = 0.04 + opacity * 0.04;
+  // Glass background. Memoised on `opacity` alone: every subtitle re-renders
+  // App, and a fresh style object here would make React rewrite the backdrop's
+  // style attribute each time, repainting a `backdrop-filter` layer that costs
+  // real work to composite. That repaint is visible as the panel flickering
+  // between clear and frosted while subtitles arrive.
+  const backdropStyle = useMemo(
+    () => ({
+      background: `linear-gradient(135deg, rgba(255,255,255,${
+        0.04 + opacity * 0.04
+      }), rgba(0,0,0,${opacity * 0.6}))`,
+      borderRadius: "12px",
+    }),
+    [opacity]
+  );
+  const rootStyle = useMemo(
+    () => ({
+      ...styles.root,
+      borderColor: `rgba(255, 255, 255, ${0.1 + opacity * 0.1})`,
+    }),
+    [opacity]
+  );
+  // The header rides the same slider as the panel instead of a fixed black:
+  // at low opacity it used to stay a solid bar while everything below it went
+  // clear.
+  const headerStyle = useMemo(
+    () => ({
+      ...styles.header,
+      background: `rgba(0, 0, 0, ${opacity * 0.18})`,
+      borderBottomColor: `rgba(255, 255, 255, ${0.03 + opacity * 0.05})`,
+    }),
+    [opacity]
+  );
 
   return (
-    <div
-      style={{
-        ...styles.root,
-        borderColor: `rgba(255, 255, 255, ${0.1 + opacity * 0.1})`,
-      }}
-    >
-      <div
-        className="glass-backdrop"
-        style={{
-          background: `linear-gradient(
-            135deg,
-            rgba(255, 255, 255, ${whiteAlpha}),
-            rgba(0, 0, 0, ${bgAlpha})
-          )`,
-          borderRadius: "12px",
-        }}
-      />
-      <div style={styles.header} data-tauri-drag-region>
+    <div style={rootStyle}>
+      <div className="glass-backdrop" style={backdropStyle} />
+      <div style={headerStyle} data-tauri-drag-region>
         <div style={styles.headerLeft}>
           <TrafficLights />
           <StatusBar status={connectionStatus} />
@@ -557,6 +614,8 @@ const App: React.FC = () => {
             onVoiceCloneChange={handleVoiceCloneChange}
             translationPrompt={translationPrompt}
             onTranslationPromptChange={handleTranslationPromptChange}
+            subtitlePace={subtitlePace}
+            onSubtitlePaceChange={handleSubtitlePaceChange}
             micMode={micMode}
             onMicModeChange={handleMicModeChange}
             micActive={micActive}
@@ -603,7 +662,6 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: "space-between",
     padding: "6px 0",
     borderBottom: "1px solid rgba(255,255,255,0.08)",
-    background: "rgba(0,0,0,0.3)",
     cursor: "grab",
     flexShrink: 0,
     position: "relative" as const,

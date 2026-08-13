@@ -1,4 +1,10 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
+import {
+  clampSubtitlePace,
+  DEFAULT_TRANSLATION_PROMPT,
+  SUBTITLE_PACE_PRESETS,
+  type SubtitlePace,
+} from "../constants";
 
 interface OutputDevice {
   name: string;
@@ -49,10 +55,15 @@ interface Props {
   micMode: string;
   onMicModeChange: (mode: string) => void;
   micActive: boolean;
-  /** Prompt template sent to the translation model. Empty means the server's
-   * built-in default; `{lang}` and `{text}` are filled in per segment. */
+  /** Prompt template sent to the translation model. Pre-filled with the
+   * default so it can be edited in place; an emptied field means "use the
+   * server's own default". `{lang}` and `{text}` are filled in per segment. */
   translationPrompt: string;
   onTranslationPromptChange: (prompt: string) => void;
+  /** How eagerly listen mode cuts speech into segments. Entered as numbers;
+   * the preset buttons only fill them in. */
+  subtitlePace: SubtitlePace;
+  onSubtitlePaceChange: (pace: SubtitlePace) => void;
 }
 
 const SOURCE_LANGUAGE_OPTIONS = [
@@ -80,18 +91,22 @@ const VOICE_OPTIONS = [
   { value: "Serena", label: "Serena (ZH)" },
 ];
 
-/** Mirrors the server's `TRANSLATION_PROMPT_DEFAULT`, shown as placeholder
- * text so the user can see what they are replacing before they type. It is
- * only a hint: leaving the field empty makes the server use its own copy. */
-const DEFAULT_PROMPT_HINT =
-  "Translate to {lang} in a natural, conversational tone. " +
-  "Do not include emojis or special symbols. " +
-  "Reply with ONLY the translation.\n\n{text}";
-
 const MIC_MODE_OPTIONS = [
   { value: "auto", label: "Auto (VAD)" },
   { value: "push_to_talk", label: "Push-to-Talk" },
 ];
+
+const PACE_FIELDS = [
+  { key: "speechS", label: "분할 시작", unit: "초" },
+  { key: "silenceMs", label: "침묵", unit: "ms" },
+  { key: "maxS", label: "상한", unit: "초" },
+] as const;
+
+const toDraft = (pace: SubtitlePace): Record<string, string> => ({
+  speechS: String(pace.speechS),
+  silenceMs: String(pace.silenceMs),
+  maxS: String(pace.maxS),
+});
 
 const SettingsDrawer: React.FC<Props> = ({
   onClose,
@@ -124,8 +139,43 @@ const SettingsDrawer: React.FC<Props> = ({
   micActive,
   translationPrompt,
   onTranslationPromptChange,
+  subtitlePace,
+  onSubtitlePaceChange,
 }) => {
   const [presetResult, setPresetResult] = useState<string | null>(null);
+  // The pace fields are edited as text and committed on blur or Enter.
+  // Parsing every keystroke made them unusable: clearing "300" to type "350"
+  // produced Number("") === 0, which came straight back as the field's value,
+  // and each intermediate digit was sent to the server and clamped.
+  const [paceDraft, setPaceDraft] = useState(() => toDraft(subtitlePace));
+  const lastPaceRef = useRef(subtitlePace);
+  if (lastPaceRef.current !== subtitlePace) {
+    // Changed from outside (a preset button): adopt it, discarding any draft.
+    lastPaceRef.current = subtitlePace;
+    setPaceDraft(toDraft(subtitlePace));
+  }
+
+  const commitPace = (key: keyof SubtitlePace) => {
+    const parsed = Number(paceDraft[key]);
+    if (paceDraft[key].trim() === "" || !Number.isFinite(parsed)) {
+      // Unparseable: put the field back rather than guessing at a number.
+      setPaceDraft(toDraft(subtitlePace));
+      return;
+    }
+    const next = clampSubtitlePace({ ...subtitlePace, [key]: parsed });
+    // Show the clamped result even when nothing else changed, so a rejected
+    // entry visibly snaps to the bound rather than lingering on screen.
+    setPaceDraft(toDraft(next));
+    if (
+      next.speechS === subtitlePace.speechS &&
+      next.silenceMs === subtitlePace.silenceMs &&
+      next.maxS === subtitlePace.maxS
+    ) {
+      return;
+    }
+    onSubtitlePaceChange(next);
+  };
+
   return (
     <div style={styles.overlay}>
       <div style={styles.header}>
@@ -335,18 +385,83 @@ const SettingsDrawer: React.FC<Props> = ({
               </div>
             )}
             <div style={styles.settingRow}>
+              <label style={styles.label}>자막 속도</label>
+              <div style={{ display: "flex", gap: "4px", flex: 1 }}>
+                {SUBTITLE_PACE_PRESETS.map((preset) => {
+                  const active =
+                    preset.value.speechS === subtitlePace.speechS &&
+                    preset.value.silenceMs === subtitlePace.silenceMs &&
+                    preset.value.maxS === subtitlePace.maxS;
+                  return (
+                    <button
+                      key={preset.label}
+                      onClick={() => onSubtitlePaceChange(preset.value)}
+                      style={{
+                        ...styles.toggleBtn,
+                        ...(active ? styles.toggleActive : {}),
+                      }}
+                    >
+                      {preset.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div style={styles.paceRow}>
+              {PACE_FIELDS.map((field) => (
+                <label key={field.key} style={styles.paceField}>
+                  <span style={styles.paceLabel}>{field.label}</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    aria-label={field.label}
+                    value={paceDraft[field.key]}
+                    onChange={(e) =>
+                      setPaceDraft((d) => ({ ...d, [field.key]: e.target.value }))
+                    }
+                    onBlur={() => commitPace(field.key)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") e.currentTarget.blur();
+                      if (e.key === "Escape") {
+                        setPaceDraft(toDraft(subtitlePace));
+                        e.currentTarget.blur();
+                      }
+                    }}
+                    style={styles.paceInput}
+                  />
+                  <span style={styles.paceUnit}>{field.unit}</span>
+                </label>
+              ))}
+            </div>
+            <div style={styles.hint}>
+              {subtitlePace.speechS}초 넘게 말하는 중에 {subtitlePace.silenceMs}ms
+              쉬면 거기서 끊고, 안 쉬면 {subtitlePace.maxS}초에서 강제로 끊습니다.
+              짧게 끊을수록 자막이 빨리 뜨지만 문장이 갈리고, ASR·번역이 한 번에
+              하나씩만 도는 구조라 너무 잘게 끊으면 번역이 밀립니다.
+            </div>
+            <div style={styles.settingRow}>
               <label style={styles.label}>Prompt</label>
               <textarea
+                aria-label="Prompt"
                 value={translationPrompt}
                 onChange={(e) => onTranslationPromptChange(e.target.value)}
-                placeholder={DEFAULT_PROMPT_HINT}
-                rows={4}
+                rows={5}
                 style={styles.textarea}
               />
             </div>
             <div style={styles.hint}>
-              {"{lang}"} = 목표 언어, {"{text}"} = 인식된 문장. 비워 두면 기본
-              프롬프트를 씁니다. 다음 문장부터 바로 적용됩니다.
+              {"{lang}"} = 목표 언어, {"{text}"} = 인식된 문장. 다음 문장부터 바로
+              적용됩니다.
+              {translationPrompt !== DEFAULT_TRANSLATION_PROMPT && (
+                <button
+                  onClick={() =>
+                    onTranslationPromptChange(DEFAULT_TRANSLATION_PROMPT)
+                  }
+                  style={styles.linkBtn}
+                >
+                  기본값으로
+                </button>
+              )}
             </div>
           </>
         )}
@@ -436,6 +551,48 @@ const styles: Record<string, React.CSSProperties> = {
     boxSizing: "border-box",
     resize: "vertical",
     fontFamily: "inherit",
+  },
+  paceRow: {
+    display: "flex",
+    gap: "6px",
+    paddingLeft: "73px",
+  },
+  paceField: {
+    display: "flex",
+    alignItems: "center",
+    gap: "3px",
+    flex: 1,
+  },
+  paceLabel: {
+    color: "rgba(255,255,255,0.4)",
+    fontSize: "10px",
+    flexShrink: 0,
+  },
+  paceInput: {
+    width: "100%",
+    minWidth: 0,
+    padding: "3px 5px",
+    border: "1px solid rgba(255,255,255,0.12)",
+    borderRadius: "4px",
+    backgroundColor: "rgba(255,255,255,0.06)",
+    color: "#fff",
+    fontSize: "11px",
+    outline: "none",
+  },
+  paceUnit: {
+    color: "rgba(255,255,255,0.35)",
+    fontSize: "10px",
+    flexShrink: 0,
+  },
+  linkBtn: {
+    marginLeft: "6px",
+    padding: 0,
+    border: "none",
+    background: "none",
+    color: "rgba(120,180,255,0.85)",
+    fontSize: "10px",
+    cursor: "pointer",
+    textDecoration: "underline",
   },
   hint: {
     color: "rgba(255,255,255,0.35)",
