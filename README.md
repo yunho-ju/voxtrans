@@ -397,11 +397,37 @@ usable without the app:
 the local translation model for something else entirely.
 
 The WebSocket protocol is what the app speaks, and it is not documented yet;
-`server/src/protocol.py` is the source of truth. **Anyone who wants a real API
-here is very welcome** — a documented protocol, an OpenAPI schema, a client
-library, a CLI, an endpoint that takes a WAV file and returns subtitles. Open
-an issue with what you want to build against and it will get shaped around
-that, rather than guessed at.
+`server/src/protocol.py` is the source of truth.
+
+## Other models and backends
+
+Translation and ASR are swappable today, within MLX:
+
+```bash
+VOXTRANS_TRANSLATION_MODEL=mlx-community/<repo> \
+VOXTRANS_ASR_MODEL=mlx-community/<repo> \
+  .venv/bin/python -m src.main
+```
+
+Anything that is not an MLX model needs a small amount of glue that does not
+exist yet: `server/src/translation.py` and `asr.py` each load and call a model
+directly rather than sitting behind an interface.
+
+**Support for other LLM backends is very welcome** — an OpenAI-compatible
+endpoint, Anthropic, Ollama, llama.cpp, LM Studio, or anything else you already
+run. The natural shape is a translation backend selected by environment
+variable, with the MLX path as one implementation among several; the same
+applies to ASR and TTS.
+
+Worth saying plainly: routing translation through a cloud API gives up the
+property this project exists for — meeting audio staying on the machine. That
+is a legitimate trade for someone who wants a bigger model on hardware that
+cannot run one, and it should be an explicit choice rather than a default, so
+the local path stays the one you get without asking. A local backend that is
+not MLX (Ollama on the same Mac, say) gives up nothing at all.
+
+If you want to add one, open an issue with the backend you have in mind and
+the interface will be shaped around a real case rather than guessed at.
 
 ## Status
 
