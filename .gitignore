@@ -15,6 +15,7 @@ server/*.pyc
 # records, and HANDOFF.md. Kept on disk, deliberately out of the repo --
 # they are a personal working log, not part of what this project ships.
 specs/
+PRODUCT.md
 
 # impeccable transients (decision sketches, question pages, downloaded craft-bar refs)
 .impeccable/sketches/
