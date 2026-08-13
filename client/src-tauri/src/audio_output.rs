@@ -87,11 +87,9 @@ fn output_start_error_message(device_uid: &str, device_name: &str) -> String {
 /// needed on the WebSocket side).
 /// Switches the live output stream to `uid` without ending the session.
 ///
-/// Before this existed the device was bound once at `start_tts_playback` and
-/// never re-read, so changing the output in settings mid-session appeared to
-/// work and silently kept playing to the old device -- the failure that cost an
-/// afternoon: the setting said "MacBook 스피커" while TTS was still going to
-/// BlackHole, with nothing in the UI or the logs disagreeing.
+/// Without this the device stays bound to whatever `start_tts_playback` opened,
+/// so a device change in settings updates the UI while playback keeps going to
+/// the old device -- a mismatch nothing in the UI or the logs reports.
 ///
 /// A failed switch leaves the stream stopped rather than pretending: the caller
 /// reports it, and the next successful switch (or a stop/start) recovers.

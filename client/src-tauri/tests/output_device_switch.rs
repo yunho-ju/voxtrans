@@ -1,13 +1,12 @@
 //! Changing the output device mid-session retargets the *running* playback
 //! thread.
 //!
-//! Before `switch_output_device` existed the device was bound once, at
-//! `start_tts_playback`, and never re-read. Choosing a different output in
-//! settings updated the UI and the stored preference while TTS kept playing to
-//! the original device, with nothing anywhere reporting the mismatch -- the
-//! failure mode was "the setting says MacBook 스피커 and I hear nothing",
-//! diagnosable only by reading the app's stderr for the device it bound at
-//! session start.
+//! What these guard: if the device stays bound to whatever
+//! `start_tts_playback` opened, choosing a different output in settings
+//! updates the UI and the stored preference while playback continues to the
+//! original device. Nothing reports the mismatch, so the symptom is "the
+//! setting says MacBook 스피커 and I hear nothing", and the only way to see
+//! the truth is the app's stderr.
 //!
 //! Like `device_identity.rs`, these drive real CoreAudio: a machine with no
 //! usable output device cannot run them, so they skip rather than fail.
@@ -20,10 +19,9 @@ use tokio::sync::mpsc;
 
 use voxtrans_client_lib::audio_output;
 
-/// Both tests open a real `AVAudioEngine`, and two of them racing for one
-/// physical device aborts the whole process (`SIGABRT`, uncatchable) rather
-/// than failing an assertion -- observed the first time these two ran
-/// concurrently. Same guard, and same reason, as `device_identity.rs`'s
+/// Both tests open a real `AVAudioEngine`, and two racing for one physical
+/// device abort the whole process (`SIGABRT`, uncatchable) rather than failing
+/// an assertion. Same guard, and same reason, as `device_identity.rs`'s
 /// `REAL_DEVICE_ACCESS`.
 static REAL_DEVICE_ACCESS: Mutex<()> = Mutex::new(());
 

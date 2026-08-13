@@ -346,8 +346,9 @@ async def _handle_speak_audio(
             return
         # The hold is the utterance (config.PTT_MIN_HOLD_S): buffer it whole,
         # run no VAD, emit nothing. Release commits it in
-        # `_flush_mic_and_process`. Splitting here is what used to start TTS
-        # mid-hold and silently drop everything the user said afterwards.
+        # `_flush_mic_and_process`. Splitting here would start TTS mid-hold,
+        # and the `tts_playing` gate above then discards the rest of what the
+        # user is still saying.
         session.mic_hold_chunks.extend(session.mic_buffer.add(data))
         held_s = _hold_duration_s(session)
         if held_s >= PTT_MAX_HOLD_S:
