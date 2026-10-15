@@ -53,13 +53,22 @@ interface InputDevice {
   uid: string;
 }
 
-const DEFAULT_URL = "ws://localhost:8765/ws";
+const DEFAULT_URL = "ws://localhost:18765/ws";
+const LEGACY_DEFAULT_URLS = new Set([
+  "ws://localhost:8765/ws",
+  "ws://127.0.0.1:8765/ws",
+]);
 
 const App: React.FC = () => {
   const { entries, connectionStatus, isTtsSpeaking, clearEntries } = useTranscription();
-  const [serverUrl, setServerUrl] = useState(
-    () => localStorage.getItem("voxtrans_server_url") || DEFAULT_URL
-  );
+  const [serverUrl, setServerUrl] = useState(() => {
+    const saved = localStorage.getItem("voxtrans_server_url");
+    if (saved && LEGACY_DEFAULT_URLS.has(saved)) {
+      localStorage.setItem("voxtrans_server_url", DEFAULT_URL);
+      return DEFAULT_URL;
+    }
+    return saved || DEFAULT_URL;
+  });
   const [sourceLanguage, setSourceLanguage] = useState("auto");
   const [targetLanguage, setTargetLanguage] = useState("Korean");
   // Sessions always run mode "both" (2026-08-06 user decision): listening

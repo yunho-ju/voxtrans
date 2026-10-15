@@ -47,7 +47,7 @@ mostly downloading models.
 │                                    ▼                                        │
 │  ┌──────────── Tauri client ────────────┐    WebSocket    ┌── Python ─────┐ │
 │  │ React UI · subtitle overlay          │ ◄─────────────► │ FastAPI       │ │
-│  │ Rust core · Swift audio capture      │  localhost:8765 │ Silero VAD    │ │
+│  │ Rust core · Swift audio capture      │ localhost:18765 │ Silero VAD    │ │
 │  │ (ScreenCaptureKit / CoreAudio)       │                 │ ASR (MLX)     │ │
 │  └──────────────────────────────────────┘                 │ Translate(MLX)│ │
 │                                    ▲                      │ TTS (MLX)     │ │
@@ -132,8 +132,8 @@ cd server
 .venv/bin/python -m src.main
 ```
 
-Health check: `curl http://localhost:8765/health` → `{"status":"ok"}`.
-The WebSocket endpoint the client uses is `ws://localhost:8765/ws`.
+Health check: `curl http://localhost:18765/health` → `{"status":"ok"}`.
+The WebSocket endpoint the client uses is `ws://localhost:18765/ws`.
 
 ### 4. Client
 
@@ -304,7 +304,7 @@ visible. Double-clicking the app sends that output nowhere.
 | You cannot hear your own translation | Expected — BlackHole has no speakers | See "Hearing your own translated voice" in §6 |
 | Changing a device in settings seems to do nothing | Fixed — device changes now apply live. On older builds this needed Stop/Start | Rebuild, or Stop/Start |
 | Permission prompts return after every build | The build was ad-hoc signed | Set `APPLE_SIGNING_IDENTITY` (§4) |
-| Server says `{"status":"ok"}` but the app cannot hold a session | A leftover server process from a crashed app still owns the port | Fixed — the server now reclaims port 8765 on startup. Otherwise kill it by hand |
+| Server says `{"status":"ok"}` but the app cannot hold a session | A leftover server process from a crashed app still owns the port | Fixed — the server now reclaims port 18765 on startup. Otherwise kill it by hand |
 | Translations are strange after editing the prompt | The template fell back to the default | Look for `Translation prompt … using default` in the server log — usually a missing `{text}` |
 
 ## Configuration
@@ -384,7 +384,7 @@ are written down where you will trip over them, not in a separate document.
 
 ## Using it from your own code
 
-The server is a plain FastAPI process on `localhost:8765`, so the pipeline is
+The server is a plain FastAPI process on `localhost:18765`, so the pipeline is
 usable without the app:
 
 | | |

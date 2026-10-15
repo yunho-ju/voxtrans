@@ -32,7 +32,7 @@ interface Props {
  * only being exercised indirectly through component behaviour. */
 export function portFromServerUrl(url: string): number {
   const match = url.match(/:(\d+)(?:\/|$)/);
-  return match ? parseInt(match[1], 10) : 8765;
+  return match ? parseInt(match[1], 10) : 18765;
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));

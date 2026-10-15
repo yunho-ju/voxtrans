@@ -527,7 +527,7 @@ fn should_spawn(last_spawn: Option<Instant>, now: Instant) -> bool {
 ///
 /// The child handle is kept in app state so the app can kill the server on
 /// exit (see `lib.rs`'s `RunEvent::Exit`). Dropping it does *not* kill the
-/// process, and an orphaned server holds port 8765 while answering `/health`
+/// process, and an orphaned server holds port 18765 while answering `/health`
 /// with 200 and resetting every WebSocket -- which the UI shows as start
 /// bouncing straight back to stop, exactly like a permissions failure.
 #[tauri::command]

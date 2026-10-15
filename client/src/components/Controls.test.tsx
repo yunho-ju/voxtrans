@@ -27,7 +27,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 const baseProps = {
   status: "disconnected",
   onClear: () => {},
-  serverUrl: "ws://localhost:8765/ws",
+  serverUrl: "ws://localhost:18765/ws",
   outputDevice: "",
   outputDeviceName: "",
   inputDevice: "",
@@ -68,7 +68,7 @@ afterEach(() => {
 // start_server call's port argument -- Critic round 1 minor ("무테스트").
 describe("portFromServerUrl", () => {
   it("returns the server's documented default when the URL has no explicit port", () => {
-    expect(portFromServerUrl("ws://localhost/ws")).toBe(8765);
+    expect(portFromServerUrl("ws://localhost/ws")).toBe(18765);
   });
 
   it("parses an explicit port out of the URL", () => {
@@ -76,7 +76,7 @@ describe("portFromServerUrl", () => {
   });
 
   it("falls back to the default for a URL with no parseable port at all", () => {
-    expect(portFromServerUrl("not-a-url")).toBe(8765);
+    expect(portFromServerUrl("not-a-url")).toBe(18765);
   });
 });
 
@@ -94,7 +94,7 @@ describe("when the server is already healthy", () => {
     // Critic round 1 ("준-공허"): the button being absent is also true if
     // the health check silently never ran at all -- pin down that the
     // probe itself happened, with the port actually parsed from serverUrl.
-    expect(invokeMock).toHaveBeenCalledWith("check_server_health", { port: 8765 });
+    expect(invokeMock).toHaveBeenCalledWith("check_server_health", { port: 18765 });
     expect(screen.queryByTestId("start-server-btn")).toBeNull();
     expect(screen.queryByTestId("server-hint")).toBeNull();
   });

@@ -82,7 +82,7 @@ def _reclaim_port(port: int) -> None:
     with no error anywhere.
 
     Only processes whose command line contains this server's module are killed:
-    an unrelated program on 8765 is reported and left alone, since taking it
+    an unrelated program on 18765 is reported and left alone, since taking it
     down would be well beyond what starting VoxTrans should do.
     """
     try:
@@ -144,7 +144,7 @@ def _watch_parent(parent_pid: int) -> None:
 
     The app also kills the server on its own clean exit, but that path does not
     run when the app is force-quit or crashes. An orphaned server keeps port
-    8765 and answers `/health` with 200 while resetting every WebSocket the
+    18765 and answers `/health` with 200 while resetting every WebSocket the
     next app opens, which looks like a broken app rather than a stale server.
     Watching the parent covers every way it can die.
     """

@@ -105,7 +105,7 @@ async def send_wav(uri: str, wav_path: str, language: str = "auto") -> None:
 def main():
     parser = argparse.ArgumentParser(description="VoxTrans test client")
     parser.add_argument("wav_file", help="Path to WAV file")
-    parser.add_argument("--uri", default="ws://localhost:8765/ws", help="WebSocket URI")
+    parser.add_argument("--uri", default="ws://localhost:18765/ws", help="WebSocket URI")
     parser.add_argument("--language", default="auto", help="Language (auto, English, Korean, ...)")
     args = parser.parse_args()
 
