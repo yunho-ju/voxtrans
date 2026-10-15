@@ -1,12 +1,14 @@
 import logging
 import multiprocessing as mp
+import threading
 import time
 from multiprocessing import Queue
-from pathlib import Path
+from queue import Empty
 
 import numpy as np
 
-from .config import TTS_MODEL, TTS_SAMPLE_RATE
+from .config import TTS_BACKEND, TTS_MODEL, TTS_SAMPLE_RATE
+from .tts_backends import default_model, make_backend
 
 logger = logging.getLogger(__name__)
 
@@ -15,29 +17,9 @@ _CHUNK = "chunk"
 _DONE = "done"
 _ERROR = "error"
 
-# Pre-generated voice references for preset speakers (16kHz numpy arrays)
-_VOICES_DIR = Path(__file__).parent / "voices"
 
-
-def _load_preset_voices(log) -> dict[str, tuple[np.ndarray, str]]:
-    """Load pre-generated voice reference files for preset speakers."""
-    voices = {}
-    if not _VOICES_DIR.exists():
-        log.warning("Voices directory not found: %s", _VOICES_DIR)
-        return voices
-    for npy_file in _VOICES_DIR.glob("*.npy"):
-        name = npy_file.stem.lower()
-        txt_file = npy_file.with_suffix(".txt")
-        if txt_file.exists():
-            audio = np.load(npy_file)
-            ref_text = txt_file.read_text().strip()
-            voices[name] = (audio, ref_text)
-            log.info("Loaded preset voice '%s': %d samples, ref='%s'",
-                     name, audio.size, ref_text[:50])
-    return voices
-
-
-def _tts_worker(request_q: Queue, response_q: Queue, model_name: str, sample_rate: int) -> None:
+def _tts_worker(request_q: Queue, response_q: Queue, backend_name: str,
+                model_name: str, sample_rate: int) -> None:
     """Dedicated TTS process — loads model and processes requests."""
     logging.basicConfig(
         level=logging.INFO,
@@ -46,16 +28,13 @@ def _tts_worker(request_q: Queue, response_q: Queue, model_name: str, sample_rat
     log = logging.getLogger("tts_worker")
 
     try:
-        from mlx_audio.tts.utils import load
         import mlx.core as mx
 
-        log.info("Loading model %s", model_name)
+        backend = make_backend(backend_name)
+        log.info("Loading model %s (backend %s)", model_name, backend_name)
         t0 = time.time()
-        model = load(model_name)
+        backend.load(model_name, sample_rate, log)
         log.info("Model loaded in %.1fs", time.time() - t0)
-
-        # Load preset voice references
-        preset_voices = _load_preset_voices(log)
     except Exception as e:
         log.exception("Failed to load TTS model")
         response_q.put(("error", str(e)))
@@ -77,50 +56,10 @@ def _tts_worker(request_q: Queue, response_q: Queue, model_name: str, sample_rat
                 t0 = time.time()
                 chunk_count = 0
 
-                # Cap max_tokens by text length to prevent runaway generation
-                # ~12.5 codec tokens/sec, ~3 words/sec → ~4 tokens per character
-                max_tok = min(2048, max(75, len(text) * 4))
-
-                # Build generate kwargs
-                gen_kwargs = dict(
-                    lang_code=lang_code,
-                    stream=True,
-                    streaming_interval=0.5,
-                    max_tokens=max_tok,
-                    temperature=0.3,
-                    top_p=0.8,
-                )
-
-                if is_voice_clone:
-                    # Voice clone mode: use user's mic audio as reference
-                    from scipy.signal import resample as scipy_resample
-                    num_samples_24k = int(len(ref_audio_np) * sample_rate / 16000)
-                    ref_resampled = scipy_resample(ref_audio_np, num_samples_24k).astype(np.float32)
-                    ref_audio_mx = mx.array(ref_resampled)
-                    gen_kwargs["ref_audio"] = ref_audio_mx
-                    if ref_text:
-                        gen_kwargs["ref_text"] = ref_text
-                    log.info("  voice clone: %d -> %d samples (16kHz -> 24kHz)",
-                             len(ref_audio_np), num_samples_24k)
-                else:
-                    # Preset mode: use pre-generated voice reference via ICL
-                    voice_key = voice.lower()
-                    if voice_key in preset_voices:
-                        preset_audio, preset_text = preset_voices[voice_key]
-                        from scipy.signal import resample as scipy_resample
-                        num_samples_24k = int(len(preset_audio) * sample_rate / 16000)
-                        ref_resampled = scipy_resample(preset_audio, num_samples_24k).astype(np.float32)
-                        gen_kwargs["ref_audio"] = mx.array(ref_resampled)
-                        gen_kwargs["ref_text"] = preset_text
-                        log.info("  preset voice '%s' via ICL ref (%d samples)",
-                                 voice_key, preset_audio.size)
-                    else:
-                        # Fallback: no voice conditioning
-                        gen_kwargs["voice"] = voice
-                        log.warning("  preset voice '%s' not found, using unconditioned", voice_key)
-
                 # Generate and send chunks immediately
-                for result in model.generate(text, **gen_kwargs):
+                for result in backend.generate(
+                    text, voice, lang_code, ref_audio_np, ref_text, log
+                ):
                     audio = result.audio
                     if isinstance(audio, mx.array):
                         mx.eval(audio)
@@ -135,7 +74,6 @@ def _tts_worker(request_q: Queue, response_q: Queue, model_name: str, sample_rat
                         chunk_count += 1
                         log.info("  chunk %d: %d samples (%.1fs)",
                                  chunk_count, audio_np.size, audio_np.size / sample_rate)
-                del result
                 # Clean up GPU memory between requests to prevent slowdown
                 mx.clear_cache()
                 response_q.put((req_id, _DONE, None, None))
@@ -158,8 +96,72 @@ class TTSEngine:
         self._req_counter = 0
         self._active_req_id = 0
         self._restart_count = 0
+        self._lock = threading.RLock()
+        # Which backend the worker is running. Starts from configuration and
+        # can be changed at runtime (`switch_backend`), so it is instance
+        # state rather than a module constant read at each spawn -- a restart
+        # after a crash has to come back as the backend in use, not the one
+        # the server booted with.
+        self._backend_name = TTS_BACKEND
+        self._model_name = TTS_MODEL
+
+    @property
+    def backend(self) -> str:
+        with self._lock:
+            return self._backend_name
+
+    @property
+    def active_backend(self) -> str | None:
+        with self._lock:
+            return self._backend_name if self._process is not None and self._process.is_alive() else None
+
+    def backend_snapshot(self) -> tuple[str, str | None]:
+        """Return configured and running backend from the same lock state."""
+        with self._lock:
+            active = self._backend_name if self._process is not None and self._process.is_alive() else None
+            return self._backend_name, active
+
+    def switch_backend(self, backend_name: str) -> None:
+        """Reload the worker on another backend. A no-op when it is already
+        the one running, since the reload costs a model load (~1-6s) and
+        silences TTS for its duration."""
+        with self._lock:
+            if self._active_req_id:
+                raise RuntimeError("Cannot change TTS backend during synthesis")
+            if backend_name == self._backend_name:
+                if self._process is None or not self._process.is_alive():
+                    self._load_locked()
+                return
+            make_backend(backend_name)
+            model_name = TTS_MODEL if backend_name == TTS_BACKEND else default_model(backend_name)
+            previous = (self._backend_name, self._model_name, self._restart_count)
+            logger.info("Switching TTS backend: %s -> %s (%s)",
+                        self._backend_name, backend_name, model_name)
+            self._shutdown_locked()
+            self._backend_name, self._model_name = backend_name, model_name
+            self._restart_count = 0
+            try:
+                self._load_locked()
+            except Exception as switch_error:
+                self._backend_name, self._model_name, self._restart_count = previous
+                try:
+                    self._load_locked()
+                except Exception as restore_error:
+                    raise RuntimeError(
+                        f"TTS switch to {backend_name} failed: {switch_error}; "
+                        f"previous backend restore failed: {restore_error}"
+                    ) from switch_error
+                raise RuntimeError(f"TTS switch to {backend_name} failed: {switch_error}; "
+                                   f"restored {self._backend_name}") from switch_error
 
     def load(self) -> None:
+        with self._lock:
+            if self._active_req_id:
+                raise RuntimeError("Cannot reload TTS worker during synthesis")
+            self._load_locked()
+
+    def _load_locked(self) -> None:
+        self._shutdown_locked()
         ctx = mp.get_context("spawn")
         self._request_q = ctx.Queue()
         self._response_q = ctx.Queue()
@@ -167,17 +169,20 @@ class TTSEngine:
         logger.info("Starting TTS worker process...")
         self._process = ctx.Process(
             target=_tts_worker,
-            args=(self._request_q, self._response_q, TTS_MODEL, TTS_SAMPLE_RATE),
+            args=(self._request_q, self._response_q, self._backend_name,
+                  self._model_name, TTS_SAMPLE_RATE),
             daemon=True,
         )
-        self._process.start()
-
-        # Wait for model to load
-        msg = self._response_q.get(timeout=300)
-        if isinstance(msg, tuple) and msg[0] == "error":
-            raise RuntimeError(f"TTS worker failed to load: {msg[1]}")
-        if msg != "ready":
-            raise RuntimeError(f"TTS worker returned unexpected status: {msg}")
+        try:
+            self._process.start()
+            msg = self._response_q.get(timeout=300)
+            if isinstance(msg, tuple) and msg[0] == "error":
+                raise RuntimeError(f"TTS worker failed to load: {msg[1]}")
+            if msg != "ready":
+                raise RuntimeError(f"TTS worker returned unexpected status: {msg}")
+        except Exception:
+            self._shutdown_locked()
+            raise
         logger.info("TTS worker process ready (pid=%d)", self._process.pid)
 
     def _check_alive(self) -> None:
@@ -193,25 +198,29 @@ class TTSEngine:
             "TTS worker died (exitcode=%s), restarting (%d/%d)...",
             code, self._restart_count, self._MAX_RESTARTS,
         )
-        self.load()
+        self._load_locked()
 
     def start_synthesis(
         self, text: str, voice: str = "Ryan", lang_code: str = "en",
         ref_audio: np.ndarray | None = None, ref_text: str | None = None,
     ) -> int:
         """Send a TTS request to the worker. Returns req_id."""
-        self._check_alive()
-        if not text.strip():
-            return -1
-
-        # Drain any orphaned responses from previous requests
-        self._drain_stale()
-
-        self._req_counter += 1
-        req_id = self._req_counter
-        self._active_req_id = req_id
-        self._request_q.put((text, voice, lang_code, req_id, ref_audio, ref_text))
-        return req_id
+        with self._lock:
+            if self._active_req_id:
+                raise RuntimeError("TTS synthesis already active")
+            if not text.strip():
+                return -1
+            self._check_alive()
+            self._drain_stale()
+            self._req_counter += 1
+            req_id = self._req_counter
+            self._active_req_id = req_id
+            try:
+                self._request_q.put((text, voice, lang_code, req_id, ref_audio, ref_text))
+            except Exception:
+                self._active_req_id = 0
+                raise
+            return req_id
 
     def _drain_stale(self) -> None:
         """Drain any leftover responses from previous requests."""
@@ -227,24 +236,35 @@ class TTSEngine:
         Returns (status, audio_np, sample_rate) where status is 'chunk', 'done', or 'error'.
         Ignores responses from orphaned (old) requests.
         """
-        self._check_alive()
-        try:
-            req_id, status, data, sr = self._response_q.get(timeout=timeout)
-        except Exception:
-            return ("timeout", None, 0)
+        with self._lock:
+            if not self._active_req_id:
+                raise RuntimeError("No active TTS synthesis")
+            if self._process is None or not self._process.is_alive():
+                self._active_req_id = 0
+                raise RuntimeError("TTS worker died during synthesis")
+            try:
+                req_id, status, data, sr = self._response_q.get(timeout=timeout)
+            except Empty:
+                return ("timeout", None, 0)
+            if req_id != self._active_req_id:
+                logger.debug("Skipping stale TTS response (req %d, active %d)", req_id, self._active_req_id)
+                return ("timeout", None, 0)
+            if status in (_DONE, _ERROR):
+                self._active_req_id = 0
+            if status == _CHUNK:
+                return ("chunk", data, sr)
+            if status in (_DONE, _ERROR):
+                return (status, None, 0)
+            return ("unknown", None, 0)
 
-        # Skip responses from old/orphaned requests
-        if req_id != getattr(self, '_active_req_id', req_id):
-            logger.debug("Skipping stale TTS response (req %d, active %d)", req_id, self._active_req_id)
-            return ("timeout", None, 0)
-
-        if status == _CHUNK:
-            return ("chunk", data, sr)
-        elif status == _DONE:
-            return ("done", None, 0)
-        elif status == _ERROR:
-            return ("error", None, 0)
-        return ("unknown", None, 0)
+    def finish_synthesis(self, req_id: int, cancel: bool = False) -> None:
+        """Release a completed request; cancellation discards its busy worker."""
+        with self._lock:
+            if req_id != self._active_req_id:
+                return
+            self._active_req_id = 0
+            if cancel:
+                self._shutdown_locked()
 
     def synthesize(
         self, text: str, voice: str = "Ryan", lang_code: str = "en",
@@ -256,22 +276,44 @@ class TTSEngine:
             return []
 
         chunks = []
-        while True:
-            self._check_alive()
-            status, audio_np, sr = self.recv_chunk(timeout=5.0)
-            if status == "chunk":
-                chunks.append((audio_np, sr))
-            elif status == "done":
-                break
-            elif status == "error":
-                raise RuntimeError("TTS synthesis failed")
-            # timeout: keep waiting
-        return chunks
+        try:
+            while True:
+                status, audio_np, sr = self.recv_chunk(timeout=5.0)
+                if status == "chunk":
+                    chunks.append((audio_np, sr))
+                elif status == "done":
+                    break
+                elif status == "error":
+                    raise RuntimeError("TTS synthesis failed")
+            return chunks
+        finally:
+            self.finish_synthesis(req_id, cancel=True)
 
     def shutdown(self) -> None:
-        if self._request_q and self._process and self._process.is_alive():
-            self._request_q.put(None)
-            self._process.join(timeout=5)
+        with self._lock:
+            self._shutdown_locked()
+
+    def _shutdown_locked(self) -> None:
+        process = self._process
+        if process is not None:
+            if process.is_alive():
+                try:
+                    self._request_q.put_nowait(None)
+                except Exception:
+                    pass
+                process.join(timeout=5)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=5)
+        for q in (self._request_q, self._response_q):
+            if q is not None:
+                q.cancel_join_thread()
+                q.close()
+        self._process = self._request_q = self._response_q = None
+        self._active_req_id = 0
 
 
 # Singleton

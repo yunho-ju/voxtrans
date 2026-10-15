@@ -39,6 +39,9 @@ class ConfigureMessage:
     target_language: str = ""
     mode: str = "listen"
     tts_voice: str = ""
+    # Which TTS backend to run. "" means "leave whatever is loaded alone" --
+    # a client that does not know about backends must not reset one.
+    tts_backend: str = ""
     speak_target_language: str = ""
     voice_clone: bool = True
     mic_mode: str = "auto"  # "auto" (VAD) or "push_to_talk"
@@ -54,6 +57,7 @@ class ConfigureMessage:
             target_language=data.get("target_language", ""),
             mode=data.get("mode", "listen"),
             tts_voice=data.get("tts_voice", ""),
+            tts_backend=data.get("tts_backend", ""),
             speak_target_language=data.get("speak_target_language", ""),
             voice_clone=data.get("voice_clone", True),
             mic_mode=data.get("mic_mode", "auto"),

@@ -8,12 +8,14 @@ import time
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, HTTPException, WebSocket
 from pydantic import BaseModel
 
 from .asr import asr_engine
-from .config import HOST, PORT
+from .config import HOST, PORT, TTS_DEFAULT_VOICE
 from .translation import translation_engine
+from .tts_backends import AVAILABLE as AVAILABLE_TTS_BACKENDS
+from .tts_backends import catalog as tts_catalog
 from .tts import tts_engine
 from .vad import load_vad_model
 from .ws_handler import handle_websocket
@@ -55,6 +57,31 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+@app.get("/voices")
+async def voices(backend: str | None = None) -> dict:
+    """The voices a TTS backend can speak with, for the app's voice picker.
+    Which backend is loaded is a server-side decision, so a client that
+    hard-coded this list would be wrong for every backend but one.
+
+    `?backend=` answers for a backend that is *not* loaded, which is what lets
+    the picker show the other backend's voices before the user commits to
+    switching. Answering costs no model load either way.
+    """
+    configured, active = await asyncio.to_thread(tts_engine.backend_snapshot)
+    name = backend or configured
+    try:
+        entries = await asyncio.to_thread(tts_catalog, name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {
+        "backend": name,
+        "active": active,
+        "backends": AVAILABLE_TTS_BACKENDS,
+        "default": TTS_DEFAULT_VOICE,
+        "voices": entries,
+    }
+
+
 class TranslateRequest(BaseModel):
     text: str
     target_language: str = "english"
@@ -82,8 +109,9 @@ def _reclaim_port(port: int) -> None:
     with no error anywhere.
 
     Only processes whose command line contains this server's module are killed:
-    an unrelated program on 18765 is reported and left alone, since taking it
-    down would be well beyond what starting VoxTrans should do.
+    an unrelated program on the port is reported and left alone, since taking it
+    down would be well beyond what starting VoxTrans should do. `VOXTRANS_PORT`
+    is the way out of that standoff -- move the server instead.
     """
     try:
         out = subprocess.run(
@@ -143,8 +171,8 @@ def _watch_parent(parent_pid: int) -> None:
     business exiting when that terminal does.
 
     The app also kills the server on its own clean exit, but that path does not
-    run when the app is force-quit or crashes. An orphaned server keeps port
-    18765 and answers `/health` with 200 while resetting every WebSocket the
+    run when the app is force-quit or crashes. An orphaned server keeps the
+    port and answers `/health` with 200 while resetting every WebSocket the
     next app opens, which looks like a broken app rather than a stale server.
     Watching the parent covers every way it can die.
     """

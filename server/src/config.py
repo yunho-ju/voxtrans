@@ -1,5 +1,7 @@
 import os
 
+from . import tts_backends
+
 SAMPLE_RATE = 16000
 
 # Network chunk: 100ms (what clients send)
@@ -31,7 +33,22 @@ VAD_MAX_SPEECH_WINDOWS = VAD_MAX_SPEECH_S * 1000 // VAD_WINDOW_DURATION_MS  # ~9
 
 # Server
 HOST = "0.0.0.0"
-PORT = 18765
+# `VOXTRANS_PORT` overrides the default port, using the same idiom as the model
+# variables below. The app passes this variable when it spawns the server,
+# derived from the server URL in Settings, so moving that URL to another port
+# moves the server with it; a hand-started server reads the variable directly.
+_PORT_DEFAULT = 18765
+_port_override = (os.environ.get("VOXTRANS_PORT") or "").strip()
+if _port_override:
+    # Loud rather than silent: falling back to the default after a typo could
+    # put the server back on a port the user was trying to leave.
+    if not _port_override.isdigit() or not 1 <= int(_port_override) <= 65535:
+        raise ValueError(
+            f"VOXTRANS_PORT must be a port number in 1-65535, got {_port_override!r}"
+        )
+    PORT = int(_port_override)
+else:
+    PORT = _PORT_DEFAULT
 MAX_SESSIONS = 5
 
 # ASR
@@ -74,7 +91,19 @@ TRANSLATION_PROMPT_DEFAULT = (
 TRANSLATION_PROMPT_MAX_LENGTH = 2000
 
 # TTS
-TTS_MODEL = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit"
+# `VOXTRANS_TTS_BACKEND` selects the model family the TTS worker loads, using
+# the same override idiom as the model variables above. "qwen3" is the
+# incumbent -- it streams sub-sentence chunks and can clone the speaker's own
+# voice; "kokoro" is an 82M non-autoregressive alternative that can do neither
+# but is far smaller and faster. Both are kept selectable so they can be
+# measured against each other on this pipeline (`bench/run.py tts_chunks`)
+# rather than compared from their model cards. The backend supplies its own
+# default repo; `VOXTRANS_TTS_MODEL` overrides that repo for either backend.
+TTS_BACKEND = (os.environ.get("VOXTRANS_TTS_BACKEND") or "").strip().lower() or tts_backends.QWEN3
+TTS_MODEL = (
+    (os.environ.get("VOXTRANS_TTS_MODEL") or "").strip()
+    or tts_backends.default_model(TTS_BACKEND)
+)
 TTS_SAMPLE_RATE = 24000
 TTS_DEFAULT_VOICE = "Ryan"
 

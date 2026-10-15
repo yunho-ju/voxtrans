@@ -30,7 +30,7 @@ pub struct AppState {
     pub output_device_tx: Mutex<Option<mpsc::Sender<(String, String)>>>,
     /// The server process this app spawned, held so it can be killed when the
     /// app exits. Dropping the handle does *not* kill the process, and an
-    /// orphaned server keeps port 18765 and answers `/health` with 200 while
+    /// orphaned server keeps its port and answers `/health` with 200 while
     /// resetting every WebSocket -- a state indistinguishable from a broken app
     /// unless you read the client's stderr.
     pub server_child: Mutex<Option<CommandChild>>,

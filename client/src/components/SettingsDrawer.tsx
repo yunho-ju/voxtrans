@@ -31,6 +31,14 @@ interface Props {
   onShowTypeInputChange: (show: boolean) => void;
   ttsVoice: string;
   onTtsVoiceChange: (voice: string) => void;
+  /** What the running server's TTS backend offers. Empty when the server has
+   * not answered (not started yet, or an older build without `/voices`), in
+   * which case the built-in list stands in. */
+  voiceOptions: { value: string; label: string }[];
+  ttsBackend: string;
+  /** The backends this server can load, from the server itself. */
+  backendOptions: { value: string; label: string }[];
+  onTtsBackendChange: (backend: string) => void;
   outputDevice: string;
   onOutputDeviceChange: (uid: string) => void;
   /** Applies the one-click meeting routing (Output → BlackHole, Mic → real
@@ -84,6 +92,12 @@ const LANGUAGE_OPTIONS = [
   { value: "Spanish", label: "Spanish" },
 ];
 
+// Stand-ins for the server's own lists, used only until it answers.
+const BACKEND_OPTIONS = [
+  { value: "qwen3", label: "Qwen3-TTS" },
+  { value: "kokoro", label: "Kokoro-82M (별도 설치)" },
+];
+
 const VOICE_OPTIONS = [
   { value: "Ryan", label: "Ryan (EN)" },
   { value: "Aiden", label: "Aiden (EN)" },
@@ -120,6 +134,10 @@ const SettingsDrawer: React.FC<Props> = ({
   onShowTypeInputChange,
   ttsVoice,
   onTtsVoiceChange,
+  voiceOptions,
+  ttsBackend,
+  backendOptions,
+  onTtsBackendChange,
   outputDevice,
   onOutputDeviceChange,
   onApplyMeetingPreset,
@@ -336,6 +354,28 @@ const SettingsDrawer: React.FC<Props> = ({
                 </button>
               </div>
             </div>
+            <div style={styles.settingRow}>
+              <label style={styles.label}>TTS Engine</label>
+              <select
+                value={ttsBackend}
+                onChange={(e) => onTtsBackendChange(e.target.value)}
+                style={styles.select}
+              >
+                {(backendOptions.length > 0
+                  ? backendOptions
+                  : BACKEND_OPTIONS
+                ).map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {ttsBackend === "kokoro" && (
+              <div style={styles.hint}>
+                Kokoro는 서버에 추가 패키지 설치가 필요합니다. 설치 방법은 README의 TTS Engine 항목을 확인하세요.
+              </div>
+            )}
             {!voiceClone && (
               <div style={styles.settingRow}>
                 <label style={styles.label}>TTS Voice</label>
@@ -344,11 +384,21 @@ const SettingsDrawer: React.FC<Props> = ({
                   onChange={(e) => onTtsVoiceChange(e.target.value)}
                   style={styles.select}
                 >
-                  {VOICE_OPTIONS.map((opt) => (
+                  {(voiceOptions.length > 0
+                    ? voiceOptions
+                    : VOICE_OPTIONS
+                  ).map((opt) => (
                     <option key={opt.value} value={opt.value}>
                       {opt.label}
                     </option>
                   ))}
+                  {/* A voice saved from a different backend is not in this
+                      list; keep showing it rather than silently snapping the
+                      setting to whatever happens to be first. */}
+                  {voiceOptions.length > 0 &&
+                    !voiceOptions.some((opt) => opt.value === ttsVoice) && (
+                      <option value={ttsVoice}>{ttsVoice} (지원 안 함)</option>
+                    )}
                 </select>
               </div>
             )}

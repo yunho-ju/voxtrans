@@ -53,6 +53,10 @@ _mlx_semaphore = asyncio.Semaphore(1)
 # Bounded thread pool for model inference (prevent unlimited thread creation)
 _executor = ThreadPoolExecutor(max_workers=1)
 
+# Worker startup and queue reads can block for seconds. Keep them away from
+# the single ASR/translation thread so a settings change cannot stall speech.
+_tts_executor = ThreadPoolExecutor(max_workers=2)
+
 # Active sessions
 _sessions: dict[str, ClientSession] = {}
 
@@ -586,6 +590,7 @@ Every path that never arms the watcher -- empty translation, `start_synthesis`
     session.transmission_active = True
     total_samples = 0
     watcher_armed = False
+    req_id = -1
     try:
         loop = asyncio.get_event_loop()
 
@@ -613,17 +618,24 @@ Every path that never arms the watcher -- empty translation, `start_synthesis`
         use_clone = session.voice_clone and session.ref_audio is not None
         ref_audio = session.ref_audio if use_clone else None
         ref_text = session.ref_text if use_clone else None
-        req_id = await loop.run_in_executor(
-            _executor, tts_engine.start_synthesis,
+        start_future = loop.run_in_executor(
+            _tts_executor, tts_engine.start_synthesis,
             translated, voice, lang_code, ref_audio, ref_text,
         )
+        try:
+            req_id = await asyncio.shield(start_future)
+        except asyncio.CancelledError:
+            # A queued start may still enqueue a request after cancellation.
+            # Recover its ID so the finally block can retire that worker.
+            req_id = await start_future
+            raise
         if req_id < 0:
             return
 
         # 4. Stream each chunk to client as soon as it arrives
         while True:
             status, audio_np, sr = await loop.run_in_executor(
-                None, tts_engine.recv_chunk, 10.0,
+                _tts_executor, tts_engine.recv_chunk, 10.0,
             )
             if status == "chunk":
                 total_samples += audio_np.size
@@ -666,6 +678,18 @@ Every path that never arms the watcher -- empty translation, `start_synthesis`
     except Exception:
         logger.exception("Translate+speak failed for segment %d", segment_id)
     finally:
+        if req_id > 0:
+            # The async task may be cancelled while recv_chunk runs in a
+            # thread. Let that read finish before dropping the busy worker.
+            cleanup = asyncio.get_running_loop().run_in_executor(
+                _tts_executor, tts_engine.finish_synthesis, req_id, True,
+            )
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                await cleanup
+            except Exception:
+                logger.exception("TTS cleanup failed for segment %d", segment_id)
         # Release immediately unless the watcher is armed -- gated purely on
         # `watcher_armed`, not on how (or whether) the try block above
         # completed (Critic round 4: an earlier version of this branch also
@@ -739,6 +763,19 @@ async def _handle_control(
     msg_type = msg.get("type")
     if msg_type == "configure":
         config = ConfigureMessage.from_dict(msg)
+        # The engine compares the requested backend under its own lock. A
+        # pre-check here would race a configure request from another session.
+        if config.tts_backend:
+            try:
+                await asyncio.get_running_loop().run_in_executor(
+                    _tts_executor, tts_engine.switch_backend, config.tts_backend
+                )
+            except Exception as exc:
+                logger.exception("TTS backend switch to %s failed", config.tts_backend)
+                async with ws_lock:
+                    await websocket.send_text(make_error(
+                        f"TTS backend switch failed: {exc}"
+                    ))
         session.configure(
             config.language,
             config.target_language,
@@ -750,6 +787,7 @@ async def _handle_control(
             translation_prompt=config.translation_prompt,
             subtitle_pace=config.subtitle_pace,
         )
+        active_tts_backend = await asyncio.to_thread(lambda: tts_engine.active_backend)
         async with ws_lock:
             await websocket.send_text(
                 make_status(
@@ -761,6 +799,7 @@ async def _handle_control(
                     speak_target_language=session.speak_target_language,
                     voice_clone=session.voice_clone,
                     mic_mode=session.mic_mode,
+                    tts_backend=active_tts_backend,
                 )
             )
     elif msg_type == "mic_active":

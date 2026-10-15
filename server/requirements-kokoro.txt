@@ -1,0 +1,8 @@
+# Install alongside requirements.txt only when using VOXTRANS_TTS_BACKEND=kokoro.
+# Kokoro's text frontend is optional and is imported when the backend loads.
+misaki[ja,zh]
+num2words
+spacy
+espeakng-loader
+phonemizer-fork
+huggingface-hub
