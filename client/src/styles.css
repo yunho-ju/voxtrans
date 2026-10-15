@@ -1,21 +1,4 @@
-/* VoxTrans - Glassmorphism */
-
-/* Glass backdrop layer - isolated from content to prevent flicker on DOM changes */
-.glass-backdrop {
-  position: absolute;
-  inset: 0;
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
-  z-index: 0;
-  pointer-events: none;
-  /* Keep this on its own compositing layer. Subtitles arrive several times a
-     second, and without the promotion the blur is re-evaluated against the
-     changing content above it, which reads as the panel flickering between
-     clear and frosted. */
-  transform: translateZ(0);
-  will-change: backdrop-filter;
-  contain: strict;
-}
+/* VoxTrans panel styles */
 
 /* Custom scrollbar - thin glass style */
 ::-webkit-scrollbar {
@@ -61,7 +44,7 @@ select:focus {
   box-shadow: 0 0 6px rgba(135, 180, 255, 0.15);
 }
 
-/* Transcription entry slide-in (no opacity to avoid backdrop-filter recomposite) */
+/* Transcription entry slide-in */
 @keyframes slideIn {
   from {
     transform: translateY(6px);

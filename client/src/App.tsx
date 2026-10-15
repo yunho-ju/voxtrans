@@ -581,23 +581,12 @@ const App: React.FC = () => {
     }
   }, [textInput, isTtsSpeaking]);
 
-  // Glass background. Memoised on `opacity` alone: every subtitle re-renders
-  // App, and a fresh style object here would make React rewrite the backdrop's
-  // style attribute each time, repainting a `backdrop-filter` layer that costs
-  // real work to composite. That repaint is visible as the panel flickering
-  // between clear and frosted while subtitles arrive.
-  const backdropStyle = useMemo(
-    () => ({
-      background: `linear-gradient(135deg, rgba(255,255,255,${
-        0.04 + opacity * 0.04
-      }), rgba(0,0,0,${opacity * 0.6}))`,
-      borderRadius: "12px",
-    }),
-    [opacity]
-  );
+  // Keep the panel tint on the root so subtitle updates cannot recompose a
+  // full-window backdrop blur. The slider is the only source of tint changes.
   const rootStyle = useMemo(
     () => ({
       ...styles.root,
+      backgroundColor: `rgba(10, 14, 24, ${opacity})`,
       borderColor: `rgba(255, 255, 255, ${0.1 + opacity * 0.1})`,
     }),
     [opacity]
@@ -616,7 +605,6 @@ const App: React.FC = () => {
 
   return (
     <div style={rootStyle}>
-      <div className="glass-backdrop" style={backdropStyle} />
       <div style={headerStyle} data-tauri-drag-region>
         <div style={styles.headerLeft}>
           <TrafficLights />
