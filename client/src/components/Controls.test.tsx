@@ -143,7 +143,13 @@ describe("when the server is down and a server directory is known", () => {
       await Promise.resolve();
     });
 
-    expect(invokeMock).toHaveBeenCalledWith("start_server", { serverDir: "/repo/server" });
+    // The port comes along so the spawned server binds where the poll below
+    // is listening -- otherwise a non-default port in Settings would only
+    // move the client.
+    expect(invokeMock).toHaveBeenCalledWith("start_server", {
+      serverDir: "/repo/server",
+      port: 18765,
+    });
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3000);
@@ -159,6 +165,29 @@ describe("when the server is down and a server directory is known", () => {
       "start_capture",
       START_CAPTURE_DEFAULT_ARGS
     );
+  });
+
+  it("spawns the server on the port from a non-default serverUrl", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "check_server_health") return false;
+      return undefined;
+    });
+
+    render(<Controls {...baseProps} serverUrl="ws://localhost:8770/ws" />);
+    await flushHealthCheck();
+
+    const btn = screen.getByTestId("start-server-btn");
+    vi.useFakeTimers();
+    await act(async () => {
+      fireEvent.click(btn);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("start_server", {
+      serverDir: "/repo/server",
+      port: 8770,
+    });
   });
 });
 

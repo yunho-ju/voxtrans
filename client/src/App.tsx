@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-shell";
 import TranscriptionOverlay from "./components/TranscriptionOverlay";
 import StatusBar from "./components/StatusBar";
-import Controls from "./components/Controls";
+import Controls, { portFromServerUrl } from "./components/Controls";
 import TrafficLights from "./components/TrafficLights";
 import SettingsDrawer from "./components/SettingsDrawer";
 import { useTranscription } from "./hooks/useTranscription";
@@ -59,6 +59,15 @@ const LEGACY_DEFAULT_URLS = new Set([
   "ws://127.0.0.1:8765/ws",
 ]);
 
+/** What `GET /voices` answers, as the Rust command hands it over. */
+type VoicesInfo = {
+  backend: string;
+  active: string;
+  default: string;
+  backends: { value: string; label: string }[];
+  voices: { value: string; label: string }[];
+};
+
 const App: React.FC = () => {
   const { entries, connectionStatus, isTtsSpeaking, clearEntries } = useTranscription();
   const [serverUrl, setServerUrl] = useState(() => {
@@ -77,6 +86,23 @@ const App: React.FC = () => {
   // (ws_handler routes system audio and mic audio independently).
   const mode = "both";
   const [ttsVoice, setTtsVoice] = useState("Ryan");
+  // Which voices exist is the *server's* answer, not ours: the TTS backend is
+  // chosen server-side (VOXTRANS_TTS_BACKEND), and each backend has its own
+  // inventory. Empty until the server answers, which is when SettingsDrawer
+  // falls back to its built-in list.
+  const [voiceOptions, setVoiceOptions] = useState<
+    { value: string; label: string }[]
+  >([]);
+  // The loaded backend belongs to the server. A picker change requests a
+  // switch; the configured status confirms which backend actually won.
+  const [ttsBackend, setTtsBackend] = useState("qwen3");
+  const [backendOptions, setBackendOptions] = useState<
+    { value: string; label: string }[]
+  >([]);
+  const pendingBackend = useRef<string | null>(null);
+  // Picker requests can finish out of order because each previews /voices.
+  // Only the newest choice may update the voice or send a backend switch.
+  const backendChoiceGeneration = useRef(0);
   // Typing-to-speak is a per-user preference, not a mode — some users only
   // ever speak, so the row can be hidden entirely from Settings.
   const [showTypeInput, setShowTypeInput] = useState(
@@ -166,6 +192,89 @@ const App: React.FC = () => {
       })
       .catch(() => {});
   }, []);
+
+  // Load the server's voice list. Re-fetched whenever the connection comes
+  // up, because on a cold start the app is running well before the server is
+  // -- and a server started later may be a different backend than the one
+  // that answered last time.
+  useEffect(() => {
+    const port = portFromServerUrl(serverUrl);
+    let cancelled = false;
+    invoke<VoicesInfo | null>("list_voices", { port })
+      .then((info) => {
+        if (cancelled || !info) return;
+        if (info.voices.length > 0) setVoiceOptions(info.voices);
+        if (info.backends.length > 0) setBackendOptions(info.backends);
+        if (!pendingBackend.current) setTtsBackend(info.active);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [serverUrl, connectionStatus]);
+
+  // Configure acknowledgements report the actual globally loaded backend.
+  // A switch can fail or another session can change it; either way the picker
+  // must follow the server's answer rather than retain an optimistic choice.
+  useEffect(() => {
+    const unlisten = listen<string>("server-status", (event) => {
+      try {
+        const status = JSON.parse(event.payload) as {
+          status?: string;
+          tts_backend?: string;
+        };
+        if (status.status !== "configured" || !status.tts_backend) return;
+        pendingBackend.current = null;
+        setTtsBackend(status.tts_backend);
+        const port = portFromServerUrl(serverUrl);
+        invoke<VoicesInfo | null>("list_voices", { port, backend: status.tts_backend })
+          .then((info) => {
+            if (!info || info.voices.length === 0) return;
+            setVoiceOptions(info.voices);
+            if (!info.voices.some((v) => v.value === ttsVoiceRef.current)) {
+              setTtsVoice(info.voices.find((v) => v.value === info.default)?.value ?? info.voices[0].value);
+            }
+          })
+          .catch(() => {});
+      } catch {
+        // Ignore statuses from older servers that do not carry JSON here.
+      }
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, [serverUrl]);
+
+  /** Switching backend reloads the server's TTS worker, and the voice that
+   * was selected may not exist on the other side — a Kokoro voicepack means
+   * nothing to Qwen3-TTS, which would fall back to an unconditioned voice
+   * that sounds wrong without saying why. So the voice resets with it. */
+  const handleTtsBackendChange = useCallback(
+    async (backend: string) => {
+      const generation = ++backendChoiceGeneration.current;
+      pendingBackend.current = backend;
+      setTtsBackend(backend);
+      const port = portFromServerUrl(serverUrl);
+      const info = await invoke<VoicesInfo | null>("list_voices", {
+        port,
+        backend,
+      }).catch(() => null);
+      if (generation !== backendChoiceGeneration.current) return;
+      const overrides: Record<string, string> = { ttsBackend: backend };
+      if (info && info.voices.length > 0) {
+        setVoiceOptions(info.voices);
+        if (!info.voices.some((v) => v.value === ttsVoiceRef.current)) {
+          const fallback =
+            info.voices.find((v) => v.value === info.default)?.value ??
+            info.voices[0].value;
+          setTtsVoice(fallback);
+          overrides.ttsVoice = fallback;
+        }
+      }
+      const sent = await sendConfigure(overrides);
+      if (!sent && generation === backendChoiceGeneration.current) {
+        pendingBackend.current = null;
+        if (info) setTtsBackend(info.active);
+      }
+    },
+    [serverUrl]
+  );
 
   // Load input (microphone) devices on mount (T008/T010: real UID
   // enumeration, no longer a hardcoded single entry).
@@ -278,6 +387,7 @@ const App: React.FC = () => {
           targetLanguage: overrides.targetLanguage ?? targetLanguageRef.current,
           mode: overrides.mode ?? modeRef.current,
           ttsVoice: overrides.ttsVoice ?? ttsVoiceRef.current,
+          ...(overrides.ttsBackend ? { ttsBackend: overrides.ttsBackend } : {}),
           speakTargetLanguage:
             overrides.speakTargetLanguage ?? speakTargetLanguageRef.current,
           voiceClone: overrides.voiceClone ?? voiceCloneRef.current,
@@ -291,8 +401,10 @@ const App: React.FC = () => {
               subtitlePaceRef.current.maxS,
             ],
         });
+        return true;
       } catch {
         // Not connected yet
+        return false;
       }
     },
     []
@@ -606,6 +718,10 @@ const App: React.FC = () => {
             showTypeInput={showTypeInput}
             onShowTypeInputChange={handleShowTypeInputChange}
             ttsVoice={ttsVoice}
+            voiceOptions={voiceOptions}
+            ttsBackend={ttsBackend}
+            backendOptions={backendOptions}
+            onTtsBackendChange={handleTtsBackendChange}
             onTtsVoiceChange={handleTtsVoiceChange}
             outputDevice={outputDevice}
             onOutputDeviceChange={handleOutputDeviceChange}

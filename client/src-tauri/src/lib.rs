@@ -43,6 +43,7 @@ pub fn run() {
             commands::start_capture,
             commands::stop_capture,
             commands::check_server_health,
+            commands::list_voices,
             commands::start_server,
             commands::default_server_dir,
             permissions::permission_status,
@@ -53,7 +54,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             // Take the server down with the app. Without this the server it
-            // spawned survives as an orphan holding port 18765 and answering
+            // spawned survives as an orphan holding its port and answering
             // /health while resetting every WebSocket -- indistinguishable
             // from a broken app unless you read the client's stderr.
             if let tauri::RunEvent::Exit = event {

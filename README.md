@@ -71,6 +71,9 @@ is what keeps the tail latency predictable. Default models:
 | Translation | `mlx-community/Qwen3.5-4B-MLX-4bit` |
 | TTS | `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit` |
 
+The TTS stage has a second backend you can select at startup — see
+[Swapping the TTS backend](#swapping-the-tts-backend).
+
 Every model choice here was made by measurement rather than reputation: each
 candidate was run against the same latency budgets and the same set of
 translation samples, and the losers lost on numbers. The harness that produced
@@ -304,7 +307,8 @@ visible. Double-clicking the app sends that output nowhere.
 | You cannot hear your own translation | Expected — BlackHole has no speakers | See "Hearing your own translated voice" in §6 |
 | Changing a device in settings seems to do nothing | Fixed — device changes now apply live. On older builds this needed Stop/Start | Rebuild, or Stop/Start |
 | Permission prompts return after every build | The build was ad-hoc signed | Set `APPLE_SIGNING_IDENTITY` (§4) |
-| Server says `{"status":"ok"}` but the app cannot hold a session | A leftover server process from a crashed app still owns the port | Fixed — the server now reclaims port 18765 on startup. Otherwise kill it by hand |
+| Server says `{"status":"ok"}` but the app cannot hold a session | A leftover server process from a crashed app still owns the port | Fixed — the server now reclaims its port on startup. Otherwise kill it by hand |
+| "서버 켜기" waits three minutes, then says the server is still loading | Another program may own the configured port, so the health probe reaches it instead of VoxTrans. `lsof -nP -iTCP:18765 -sTCP:LISTEN` checks the default port | Stop that program, or choose another port (see "Changing the server port") |
 | Translations are strange after editing the prompt | The template fell back to the default | Look for `Translation prompt … using default` in the server log — usually a missing `{text}` |
 
 ## Configuration
@@ -315,7 +319,29 @@ Environment variables (unset → built-in default):
 |---|---|
 | `VOXTRANS_TRANSLATION_MODEL` | Override the translation model (any MLX-LM repo id) |
 | `VOXTRANS_ASR_MODEL` | Override the ASR model (Qwen3-ASR family or `mlx-community/whisper-*`) |
+| `VOXTRANS_PORT` | Override the default server port, 18765 (see "Changing the server port" below). A value that is not a port in 1–65535 is refused at startup rather than falling back |
 | `APPLE_SIGNING_IDENTITY` | Code-signing identity for `tauri build` (see [§4](#4-client)) |
+
+### Changing the server port
+
+The default is 18765. Earlier builds used 8765; on launch, the app moves a
+saved default `ws://localhost:8765/ws` or `ws://127.0.0.1:8765/ws` to the new
+port. A custom server URL stays as saved. If another process already uses the
+configured port, startup may fail and the app can wait out its three-minute
+health-check window.
+
+To move: set the server URL in the app's settings to the new port (e.g.
+`ws://localhost:18766/ws`). The app passes that port to the server it spawns, so
+both sides move together. A server you start by hand needs the variable
+directly:
+
+```bash
+VOXTRANS_PORT=18766 python -m src.main
+```
+
+The server never evicts a program it did not start: on startup it reclaims the
+port from a previous VoxTrans server, but an unrelated process holding it is
+logged and left alone.
 
 The **translation prompt** is editable in the app's settings rather than here.
 `{lang}` and `{text}` are substituted per segment; leaving the field empty uses
@@ -401,7 +427,9 @@ The WebSocket protocol is what the app speaks, and it is not documented yet;
 
 ## Other models and backends
 
-Translation and ASR are swappable today, within MLX:
+Translation and ASR are swappable by model, within MLX; TTS is swappable by
+backend, and its seam (`server/src/tts_backends.py`) is the shape the other
+two would take.
 
 ```bash
 VOXTRANS_TRANSLATION_MODEL=mlx-community/<repo> \
@@ -410,8 +438,73 @@ VOXTRANS_ASR_MODEL=mlx-community/<repo> \
 ```
 
 Anything that is not an MLX model needs a small amount of glue that does not
-exist yet: `server/src/translation.py` and `asr.py` each load and call a model
-directly rather than sitting behind an interface.
+exist yet on those two stages: `server/src/translation.py` and `asr.py` each
+load and call a model directly rather than sitting behind an interface.
+
+### Swapping the TTS backend
+
+The app's settings have a **TTS Engine** picker, and changing it reloads the
+server's TTS worker on the other backend — a few seconds during which nothing
+speaks, and no restart. `VOXTRANS_TTS_BACKEND` sets which one the server boots
+with (default `qwen3`); the picker adopts whatever is loaded and takes over
+from there. Nothing else in the pipeline changes either way: the same process,
+the same chunk protocol, the same suppression deadlines.
+
+| | `qwen3` (default) | `kokoro` |
+|---|---|---|
+| Model | `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit` | `prince-canuma/Kokoro-82M` |
+| First audio | 394–401 ms, then streams | 249–267 ms, whole utterance at once |
+| Full utterance | ~2.2 s for 3.2 s of speech | ~0.25 s for 3.9 s of speech |
+| Voice clone | yes | no — falls back to a preset voice |
+| Spoken languages | EN, ZH presets | EN out of the box; ZH, JA, ES, FR, IT, HI, PT each need their own G2P installed — **no Korean at all** |
+
+(Measured on one machine, same phrase, warm — `Ryan`/English, second and third
+synthesis after a discarded warm-up. Reproduce with `bench/run.py tts_chunks`.)
+
+Kokoro is non-autoregressive, so it does not stream: it returns the whole
+utterance in one chunk, which here still arrives sooner than the incumbent's
+*first* chunk. What it gives up is the voice clone — voice is a stored style
+vector, not a reference clip, so a clone request logs a warning and speaks in
+the mapped preset instead.
+
+The voice picker is filled from the server (`GET /voices`), so it shows
+whatever the selected backend actually offers: the four presets under `qwen3`,
+and under `kokoro` those four plus every voicepack in the downloaded snapshot
+(54 of them). Switching engines resets the voice when the
+new backend has no such voice, because `af_heart` means nothing to Qwen3-TTS
+and would be spoken by an unconditioned voice that sounds wrong without
+saying why.
+
+Kokoro's voicepacks are per language, so the app's four voice names are slots
+filled per target language rather than fixed voices: Ryan and Aiden are the
+male slots (`am_michael`/`am_adam` in English, `jm_kumo` in Japanese,
+`zm_yunxi`/`zm_yunjian` in Mandarin), Vivian and Serena the female ones. A
+language that has no voice for a slot — Japanese ships one male voice, French
+ships one voice total — substitutes within the same language and says so in
+the log, because the wrong language is the worse mismatch. Any raw voicepack
+name typed into the setting is passed through untouched.
+
+The first utterance in a given language is slower (~900 ms here, against
+~250 ms warm): Kokoro builds that language's front-end on first use.
+
+Kokoro has no text front-end of its own, so it needs an optional G2P stack that
+the default install does not carry. From `server/`:
+
+```bash
+.venv/bin/pip install -r requirements-kokoro.txt
+VOXTRANS_TTS_BACKEND=kokoro .venv/bin/python -m src.main
+```
+
+That installs the Mandarin and Japanese extras as well as English. The other
+supported languages (ES, FR, IT, HI, PT) use the espeak front-end. Kokoro has
+no Korean voice. mlx-audio does not chunk long text, so split on newlines.
+
+A missing English front-end fails at model load, with the install line. A
+missing per-language one fails on the first request in that language, because
+that is when Kokoro builds the pipeline for it. If a runtime switch fails, the
+server reports the error and restores the prior engine. Switching while TTS is
+speaking is rejected; try again after the utterance. `VOXTRANS_TTS_MODEL`
+overrides the repo for either backend.
 
 **Support for other LLM backends is very welcome** — an OpenAI-compatible
 endpoint, Anthropic, Ollama, llama.cpp, LM Studio, or anything else you already

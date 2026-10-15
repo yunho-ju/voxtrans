@@ -126,6 +126,7 @@ pub async fn send_configure(
     target_language: String,
     mode: Option<String>,
     tts_voice: Option<String>,
+    tts_backend: Option<String>,
     speak_target_language: Option<String>,
     voice_clone: Option<bool>,
     mic_mode: Option<String>,
@@ -143,6 +144,12 @@ pub async fn send_configure(
         }
         if let Some(v) = tts_voice {
             json["tts_voice"] = serde_json::Value::String(v);
+        }
+        // Omitted rather than sent empty when the UI has no opinion: the
+        // server reads a backend name as "switch to this", and switching
+        // costs a model reload.
+        if let Some(b) = tts_backend {
+            json["tts_backend"] = serde_json::Value::String(b);
         }
         if let Some(s) = speak_target_language {
             json["speak_target_language"] = serde_json::Value::String(s);
@@ -462,6 +469,66 @@ fn check_health_at(host: &str, port: u16) -> bool {
     response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")
 }
 
+/// One voice the loaded TTS backend can speak with, as the picker shows it.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct Voice {
+    pub value: String,
+    pub label: String,
+}
+
+/// What the server says about TTS voices: the backend the answer is for, the
+/// one actually loaded, and every backend the picker may offer.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct VoicesInfo {
+    pub backend: String,
+    pub active: String,
+    pub default: String,
+    pub backends: Vec<Voice>,
+    pub voices: Vec<Voice>,
+}
+
+/// Reads `GET /voices` off the server, over the same hand-rolled HTTP as
+/// `check_health_at` (no HTTP client crate). Split from the command wrapper
+/// so a test can point it at a mock `TcpListener`.
+///
+/// Unlike the health probe this needs the body, not just the status line, so
+/// it reads to EOF -- `Connection: close` makes the server hang up when the
+/// body is done, which is what ends the read.
+fn fetch_voices_at(host: &str, port: u16, backend: Option<&str>) -> Option<VoicesInfo> {
+    let mut addrs = format!("{host}:{port}").to_socket_addrs().ok()?;
+    let addr = addrs.next()?;
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500)).ok()?;
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(2000)));
+    // Only ever a backend id we ship (`qwen3`/`kokoro`); anything else the
+    // server rejects with 400, which reads here as "no answer".
+    let path = match backend {
+        Some(name) => format!("/voices?backend={name}"),
+        None => "/voices".to_string(),
+    };
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).ok()?;
+
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).ok()?;
+    let response = String::from_utf8_lossy(&raw);
+    if !(response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")) {
+        return None;
+    }
+    let body = response.split("\r\n\r\n").nth(1)?;
+    serde_json::from_str(body).ok()
+}
+
+/// The voices a TTS backend offers, plus which backends exist and which one
+/// is loaded. `backend` asks about one that is not loaded (how the picker
+/// previews the other backend); omitting it asks about the loaded one.
+/// `None` when the server is unreachable or too old to answer -- the UI keeps
+/// its built-in list in that case rather than showing an empty picker.
+#[tauri::command]
+pub async fn list_voices(port: u16, backend: Option<String>) -> Option<VoicesInfo> {
+    fetch_voices_at("127.0.0.1", port, backend.as_deref())
+}
+
 /// Whether the server on `127.0.0.1:port` is up and answering `/health` --
 /// backs the client's "서버 켜기" flow (disabled button vs. spawn-and-poll).
 /// `async fn` (Critic round 1, minor): Tauri offloads async commands onto
@@ -502,19 +569,25 @@ fn resolve_server_python(server_dir: &str) -> Result<PathBuf, String> {
 /// the pair fails on bind with EADDRINUSE.
 const SPAWN_GUARD_WINDOW: Duration = Duration::from_secs(180);
 
-/// Last time `start_server` actually spawned a process, `None` before the
-/// first call. Read/written only through `should_spawn`'s call sites in
-/// `start_server` below.
-static LAST_SPAWN: StdMutex<Option<Instant>> = StdMutex::new(None);
+/// Last successful spawn's time and target. A new port or server directory
+/// bypasses the guard window, while a repeat click on the same target waits.
+static LAST_SPAWN: StdMutex<Option<(Instant, PathBuf, u16)>> = StdMutex::new(None);
 
 /// Pure decision behind the spawn guard: `now` and `last_spawn` are plain
 /// parameters (not read from the static / `Instant::now()` directly) so
 /// this is testable without depending on wall-clock timing ("시각 주입
 /// 가능하게 분리").
-fn should_spawn(last_spawn: Option<Instant>, now: Instant) -> bool {
+fn should_spawn(
+    last_spawn: Option<(Instant, &PathBuf, u16)>,
+    now: Instant,
+    server_dir: &PathBuf,
+    port: u16,
+) -> bool {
     match last_spawn {
         None => true,
-        Some(last) => now.duration_since(last) >= SPAWN_GUARD_WINDOW,
+        Some((last, last_dir, last_port)) => {
+            last_dir != server_dir || last_port != port || now.duration_since(last) >= SPAWN_GUARD_WINDOW
+        }
     }
 }
 
@@ -527,21 +600,44 @@ fn should_spawn(last_spawn: Option<Instant>, now: Instant) -> bool {
 ///
 /// The child handle is kept in app state so the app can kill the server on
 /// exit (see `lib.rs`'s `RunEvent::Exit`). Dropping it does *not* kill the
-/// process, and an orphaned server holds port 18765 while answering `/health`
+/// process, and an orphaned server holds the port while answering `/health`
 /// with 200 and resetting every WebSocket -- which the UI shows as start
 /// bouncing straight back to stop, exactly like a permissions failure.
+///
+/// `port` is the one parsed out of the server URL in Settings, handed to the
+/// server as `VOXTRANS_PORT` so it binds exactly where the health poll is
+/// listening. Without it, changing the URL to escape a busy port would only
+/// move the client, and the poll would wait out its full timeout against a
+/// server sitting on the old port.
 #[tauri::command]
 pub async fn start_server(
     app: AppHandle,
     state: State<'_, SharedState>,
     server_dir: String,
+    port: u16,
 ) -> Result<String, String> {
     let python_path = resolve_server_python(&server_dir)?;
+    let target_dir = PathBuf::from(&server_dir)
+        .canonicalize()
+        .map_err(|e| format!("Cannot resolve server directory {server_dir}: {e}"))?;
 
     let now = Instant::now();
     let mut last_spawn = LAST_SPAWN.lock().map_err(|e| e.to_string())?;
-    if !should_spawn(*last_spawn, now) {
+    if !should_spawn(
+        last_spawn.as_ref().map(|(at, dir, port)| (*at, dir, *port)),
+        now,
+        &target_dir,
+        port,
+    ) {
         return Ok("already_starting".to_string());
+    }
+
+    // A changed target must not leave the server this app started on the old
+    // port running. The same applies after the guard window expires.
+    if let Some(previous) = state.server_child.lock().take() {
+        if let Err(e) = previous.kill() {
+            log::warn!("Could not stop previous server before restart: {e}");
+        }
     }
 
     use tauri_plugin_shell::ShellExt;
@@ -554,6 +650,7 @@ pub async fn start_server(
         "VOXTRANS_PARENT_PID".to_string(),
         std::process::id().to_string(),
     );
+    env.insert("VOXTRANS_PORT".to_string(), port.to_string());
     let (_rx, child) = app
         .shell()
         .command(python_path)
@@ -562,11 +659,9 @@ pub async fn start_server(
         .envs(env)
         .spawn()
         .map_err(|e| format!("Failed to start server: {e}"))?;
-    // Replacing an existing handle (a previous spawn whose server has since
-    // died) just drops the stale one, which is harmless -- it is the *live*
-    // process we must not lose track of.
+    // The prior child was stopped above before this handle replaces it.
     *state.server_child.lock() = Some(child);
-    *last_spawn = Some(now);
+    *last_spawn = Some((now, target_dir, port));
     Ok("spawned".to_string())
 }
 
@@ -656,6 +751,49 @@ mod tests {
         assert!(!check_health_at("127.0.0.1", port));
     }
 
+    // fetch_voices_at -- same mock-socket approach, but it has to read a
+    // body, not just a status line.
+
+    #[test]
+    fn fetch_voices_at_parses_the_servers_list() {
+        let body = r#"{"backend":"kokoro","active":"qwen3","backends":[{"value":"qwen3","label":"Qwen3"},{"value":"kokoro","label":"Kokoro"}],"default":"Ryan","voices":[{"value":"Ryan","label":"Ryan (auto)"},{"value":"af_heart","label":"af_heart"}]}"#;
+        let response: &'static str = Box::leak(
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len())
+                .into_boxed_str(),
+        );
+        let port = spawn_mock_http_server(response);
+
+        let info = fetch_voices_at("127.0.0.1", port, Some("kokoro")).expect("voices");
+
+        assert_eq!(info.voices.len(), 2);
+        assert_eq!(info.voices[0].value, "Ryan");
+        assert_eq!(info.voices[1].label, "af_heart");
+        // The loaded backend is reported separately from the one asked
+        // about, so the UI can preview without claiming it switched.
+        assert_eq!(info.backend, "kokoro");
+        assert_eq!(info.active, "qwen3");
+        assert_eq!(info.default, "Ryan");
+        assert_eq!(info.backends.len(), 2);
+    }
+
+    #[test]
+    fn fetch_voices_at_none_for_a_server_without_the_endpoint() {
+        // An older server 404s /voices; the UI must keep its built-in list
+        // rather than render an empty picker.
+        let port = spawn_mock_http_server("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+
+        assert!(fetch_voices_at("127.0.0.1", port, None).is_none());
+    }
+
+    #[test]
+    fn fetch_voices_at_none_when_nothing_is_listening() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        assert!(fetch_voices_at("127.0.0.1", port, None).is_none());
+    }
+
     // C7: resolve_server_python -- the pure validation `start_server` runs
     // before ever spawning a process.
 
@@ -720,7 +858,7 @@ mod tests {
 
     #[test]
     fn should_spawn_true_when_nothing_has_been_spawned_yet() {
-        assert!(should_spawn(None, Instant::now()));
+        assert!(should_spawn(None, Instant::now(), &PathBuf::from("server"), 18765));
     }
 
     #[test]
@@ -728,7 +866,8 @@ mod tests {
         let now = Instant::now();
         let ten_seconds_ago = now - Duration::from_secs(10);
 
-        assert!(!should_spawn(Some(ten_seconds_ago), now));
+        let dir = PathBuf::from("server");
+        assert!(!should_spawn(Some((ten_seconds_ago, &dir, 18765)), now, &dir, 18765));
     }
 
     #[test]
@@ -736,6 +875,7 @@ mod tests {
         let now = Instant::now();
         let long_ago = now - (SPAWN_GUARD_WINDOW + Duration::from_secs(1));
 
-        assert!(should_spawn(Some(long_ago), now));
+        let dir = PathBuf::from("server");
+        assert!(should_spawn(Some((long_ago, &dir, 18765)), now, &dir, 18765));
     }
 }

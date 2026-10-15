@@ -170,7 +170,10 @@ const Controls: React.FC<Props> = ({
       // click, without ever calling start_server.
       const alreadyHealthy = await checkHealth();
       if (!alreadyHealthy) {
-        await invoke("start_server", { serverDir });
+        // The port travels with the spawn: the server binds where this poll
+        // listens, so moving the URL in Settings off a busy port actually
+        // moves the server.
+        await invoke("start_server", { serverDir, port });
         const becameHealthy = await pollUntilHealthy(port);
         if (!becameHealthy) {
           // Critic round 1 [major]: no longer implies a fresh click would

@@ -1,7 +1,7 @@
 """The server exits when the app that spawned it disappears.
 
 The app kills the server on its own clean exit, but that path does not run
-when the app is force-quit or crashes. An orphaned server keeps port 18765 and
+when the app is force-quit or crashes. An orphaned server keeps its port and
 answers `/health` with 200 while resetting every WebSocket the next app opens
 -- which presents as a broken app, not a stale server, and is diagnosable only
 from the client's stderr.
