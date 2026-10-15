@@ -83,13 +83,16 @@ pub fn start_mic_capture(
     let ok = unsafe { mic_start_capture(mic_data_callback, c_uid.as_ptr()) };
     if !ok {
         *MIC_AUDIO_TX.lock() = None;
-        return Err(if device_uid.is_empty() {
+        let permission_granted = crate::permissions::status().microphone;
+        return Err(if !permission_granted {
             "Failed to start mic capture. Grant Microphone permission in System Settings."
+                .to_string()
+        } else if device_uid.is_empty() {
+            "Failed to start mic capture on the system default input. Select an available microphone in VoxTrans Settings."
                 .to_string()
         } else {
             format!(
-                "Failed to start mic capture on device '{}'. The device may be missing, \
-                 removed, or microphone permission may not be granted.",
+                "Failed to start mic capture on device '{}'. It may be unavailable; select an available microphone in VoxTrans Settings.",
                 device_uid
             )
         });

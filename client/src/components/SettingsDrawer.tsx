@@ -299,6 +299,9 @@ const SettingsDrawer: React.FC<Props> = ({
             style={styles.select}
           >
             <option value="">Default (System)</option>
+            {inputDevice && !inputDevices.some((dev) => dev.uid === inputDevice) && (
+              <option value={inputDevice}>연결되지 않은 마이크 ({inputDevice})</option>
+            )}
             {inputDevices.map((dev) => (
               <option key={dev.uid} value={dev.uid}>
                 {dev.name}

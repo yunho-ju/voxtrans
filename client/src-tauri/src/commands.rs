@@ -378,10 +378,12 @@ pub async fn start_capture(
     std::thread::spawn(move || {
         if let Err(e) = mic_capture::start_mic_capture(mic_tx, stop_mic_rx, mic_device_uid) {
             error!("Mic capture error: {}", e);
-            let _ = app_mic.emit(
-                "permission-error",
-                serde_json::json!({ "kind": "microphone", "message": e.clone() }),
-            );
+            if !crate::permissions::status().microphone {
+                let _ = app_mic.emit(
+                    "permission-error",
+                    serde_json::json!({ "kind": "microphone", "message": e.clone() }),
+                );
+            }
             let _ = app_mic.emit("server-error", e);
         }
     });
